@@ -3,7 +3,7 @@
 
 import type { OfficeDataSource, OfficeEvent } from "../source";
 
-export function createWsSource(token: string): OfficeDataSource {
+export function createWsSource(token: string | null, localPort?: string, projectId?: string): OfficeDataSource {
   let ws: WebSocket | null = null;
   const queue: string[] = [];
 
@@ -25,7 +25,8 @@ export function createWsSource(token: string): OfficeDataSource {
         if (!active) return;
         onStatus?.(retry ? "reconnecting" : "connecting");
         const proto = location.protocol === "https:" ? "wss" : "ws";
-        const sock = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+        const path = projectId ? `/api/projects/${encodeURIComponent(projectId)}/ws` : `/ws?token=${encodeURIComponent(token ?? "")}`;
+        const sock = new WebSocket(`${proto}://${localPort ? `127.0.0.1:${localPort}` : location.host}${path}`);
         socket = sock;
         let opened = false;
         sock.onopen = () => {

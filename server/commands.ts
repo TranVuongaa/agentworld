@@ -175,13 +175,13 @@ export function makeCommands(hub: Hub, sessions: Sessions, planner: Planner, inb
       const svc = str(service, 40);
       if (!(SERVICE_KEYS as readonly string[]).includes(svc) || typeof value !== "string" || !value.trim()) return;
       if (agentId && !hub.cfg(agentId)) return;
-      return attempt(agentId, `Stored the ${svc} key ${agentId ? `for ${hub.name(agentId)}'s sandbox` : "for every sandbox"}`, () => sbx.setKey(agentId, svc, value));
+      return attempt(agentId, `Stored the ${svc} key ${agentId ? `for ${hub.name(agentId)}'s sandbox` : hub.snap.config.project.managed ? "for this project" : "for every sandbox"}`, () => sbx.setKey(agentId, svc, value));
     },
     removeSecret: (id, service) => {
       const agentId = id === null ? null : str(id, 80);
       const svc = str(service, 40);
       if (!(SERVICE_KEYS as readonly string[]).includes(svc)) return;
-      return attempt(agentId, `Removed the ${svc} key ${agentId ? `from ${hub.name(agentId)}'s sandbox` : "from every sandbox"}`, () => sbx.removeKey(agentId, svc));
+      return attempt(agentId, `Removed the ${svc} key ${agentId ? `from ${hub.name(agentId)}'s sandbox` : hub.snap.config.project.managed ? "from this project" : "from every sandbox"}`, () => sbx.removeKey(agentId, svc));
     },
     setProxy: (url) => {
       const u = typeof url === "string" && url.trim() ? str(url, 300).trim() : null;

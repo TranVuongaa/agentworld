@@ -67,9 +67,9 @@ function defaultConfig(repo: RepoInfo, port: number): HqConfig {
 }
 
 /** `isNew`: no config yet — the welcome screen fills it in, then it's saved. */
-export function loadConfig(repo: RepoInfo, port: number): { config: HqConfig; isNew: boolean } {
+export function loadConfig(repo: RepoInfo, port: number, saved?: HqConfig): { config: HqConfig; isNew: boolean } {
   const file = join(dir(repo.root), "config.json");
-  const found = readJson<HqConfig>(file);
+  const found = saved ?? readJson<HqConfig>(file);
   if (found) {
     // Older files may miss newer fields.
     for (const a of found.team) {
@@ -98,8 +98,8 @@ export function saveConfig(root: string, cfg: HqConfig) {
   writeJson(join(dir(root), "config.json"), { ...cfg, project: { ...project, path: "" } });
 }
 
-export function loadPlan(root: string): PlanFile {
-  return readJson<PlanFile>(join(dir(root), "plan.json")) ?? { boards: [{ id: "B1", title: "Backlog", status: "active", order: 0 }], tasks: [] };
+export function loadPlan(root: string, saved?: PlanFile): PlanFile {
+  return saved ?? readJson<PlanFile>(join(dir(root), "plan.json")) ?? { boards: [{ id: "B1", title: "Backlog", status: "active", order: 0 }], tasks: [] };
 }
 
 export function savePlan(root: string, plan: PlanFile) {

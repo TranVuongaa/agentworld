@@ -11,6 +11,7 @@ import { run } from "./lib/exec";
 import { log } from "./lib/log";
 import { projectHome, sessionName } from "./paths";
 import { policyVerdict } from "./setup";
+import { managedCredentialsEnabled, projectKeyNames, removeProjectKey, resolveProjectKeys, setProjectKey } from "./lib/managedCredentials";
 
 interface RawRule {
   id: string;
@@ -40,6 +41,12 @@ export class Sbx {
   private ownedFile: string;
   private owned: Record<string, string[]>; // sandbox name → "allow foo.com" entries HQ added
   private syncQueues = new Map<string, Promise<void>>();
+  private keyQueue: Promise<unknown> = Promise.resolve();
+  private serializeKeys<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.keyQueue.then(fn, fn);
+    this.keyQueue = next.catch(() => {});
+    return next;
+  }
 
   constructor(private hub: Hub) {
     this.ownedFile = join(projectHome(hub.slug), "sbx-owned.json");
@@ -104,7 +111,8 @@ export class Sbx {
     }
     this.state.basePolicy = base;
     this.state.proxy = proxyOut.stdout.trim() || null;
-    this.state.globalKeys = secrets.filter((s) => s.type === "service" && s.scope === "global").map((s) => s.name);
+    const managedKeys = managedCredentialsEnabled() ? await projectKeyNames().catch(() => { log.warn("Project credential list is unavailable"); return []; }) : null;
+    this.state.globalKeys = managedKeys ? managedKeys.filter((s) => s.agentId === null).map((s) => s.service) : secrets.filter((s) => s.type === "service" && s.scope === "global").map((s) => s.name);
     const prevErrors = this.state.agents;
     this.state.agents = {};
     for (const a of this.hub.snap.config.team) {
@@ -121,7 +129,7 @@ export class Sbx {
       this.state.agents[a.id] = {
         rules: sandboxRules,
         // sbx reports a sandbox scope as the bare sandbox name.
-        keys: secrets.filter((s) => s.type === "service" && (s.scope === name || s.scope === `sandbox:${name}`)).map((s) => s.name),
+        keys: managedKeys ? managedKeys.filter((s) => s.agentId === a.id).map((s) => s.service) : secrets.filter((s) => s.type === "service" && (s.scope === name || s.scope === `sandbox:${name}`)).map((s) => s.name),
         envFile: { path: this.envFile(a.id), exists: existsSync(this.envFile(a.id)) },
         syncError: prevErrors[a.id]?.syncError ?? null,
         approvals: prevErrors[a.id]?.approvals ?? [],
@@ -459,8 +467,57 @@ export class Sbx {
     }
   }
 
-  /** Stores a service key (value via stdin, never kept). agentId null = every sandbox. */
+  /** Install this project's keys in one sandbox before starting its agent. */
+  async prepareManagedKeys(agentId: string): Promise<string[]> {
+    if (!managedCredentialsEnabled()) return [];
+    return this.serializeKeys(async () => {
+    const values = await resolveProjectKeys(agentId);
+    for (const [service, value] of Object.entries(values)) {
+      const result = await run("sbx", ["secret", "set", service, "--sandbox", this.name(agentId), "--force"], { timeoutMs: 20_000, input: value + "\n" });
+      if (!result.ok) throw new Error(`Could not configure ${service} for this agent`);
+    }
+    const configured = Object.keys(values);
+    if (!configured.includes("openai")) {
+      // Local development can still use an existing machine-wide Codex login.
+      const listed = await run("sbx", ["secret", "ls", "--json"], { timeoutMs: 10_000 });
+      const entries = parseCliJson<{ secrets?: { name: string; scope: string }[] }>(listed.stdout)?.secrets ?? [];
+      if (entries.some((entry) => entry.name === "openai" && entry.scope === "global")) configured.push("openai");
+    }
+    return configured;
+    });
+  }
+
+  /** Refresh short-lived GitHub credentials for active project agents. */
+  async refreshManagedGithub(): Promise<void> {
+    if (!managedCredentialsEnabled()) return;
+    return this.serializeKeys(async () => {
+    for (const agent of this.hub.snap.config.team) {
+      if (agent.mode !== "sandbox" || this.hub.status(agent.id)?.session.state !== "running") continue;
+      try {
+        const keys = await resolveProjectKeys(agent.id);
+        if (keys.github) {
+          const result = await run("sbx", ["secret", "set", "github", "--sandbox", this.name(agent.id), "--force"], { timeoutMs: 20_000, input: keys.github + "\n" });
+          if (!result.ok) throw new Error("sbx rejected the GitHub credential");
+        }
+      } catch { log.warn(`Could not refresh GitHub credentials for ${agent.id}`); }
+    }
+    });
+  }
+
+  /** Stores a service key (value via stdin). Managed keys are scoped to this project. */
   async setKey(agentId: string | null, service: string, value: string) {
+    if (managedCredentialsEnabled()) return this.serializeKeys(async () => {
+      await setProjectKey(agentId, service, value);
+      for (const agent of this.hub.snap.config.team.filter((a) => !agentId || a.id === agentId)) {
+        const keys = await resolveProjectKeys(agent.id);
+        const scoped = keys[service];
+        if (scoped) {
+          const result = await run("sbx", ["secret", "set", service, "--sandbox", this.name(agent.id), "--force"], { timeoutMs: 20_000, input: scoped + "\n" });
+          if (!result.ok) throw new Error(`Could not configure ${service} for ${agent.name}`);
+        }
+      }
+      await this.refresh();
+    });
     const args = ["secret", "set", service, ...(agentId ? ["--sandbox", this.name(agentId)] : []), "--force"];
     const r = await run("sbx", args, { timeoutMs: 20_000, input: value.trim() + "\n" });
     if (!r.ok) throw new Error(r.stderr.trim().split("\n")[0] || "sbx secret set failed");
@@ -468,6 +525,17 @@ export class Sbx {
   }
 
   async removeKey(agentId: string | null, service: string) {
+    if (managedCredentialsEnabled()) return this.serializeKeys(async () => {
+      await removeProjectKey(agentId, service);
+      for (const agent of this.hub.snap.config.team.filter((a) => !agentId || a.id === agentId)) {
+        const keys = await resolveProjectKeys(agent.id);
+        const scoped = keys[service];
+        const args = scoped ? ["secret", "set", service, "--sandbox", this.name(agent.id), "--force"] : ["secret", "rm", service, "--sandbox", this.name(agent.id), "--force"];
+        const result = await run("sbx", args, { timeoutMs: 20_000, ...(scoped ? { input: scoped + "\n" } : {}) });
+        if (!result.ok) throw new Error(`Could not update ${service} for ${agent.name}`);
+      }
+      await this.refresh();
+    });
     const r = await run("sbx", ["secret", "rm", service, ...(agentId ? ["--sandbox", this.name(agentId)] : []), "--force"], { timeoutMs: 20_000 });
     if (!r.ok) throw new Error(r.stderr.trim().split("\n")[0] || "sbx secret rm failed");
     await this.refresh();

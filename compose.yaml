@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agentworld
+      POSTGRES_PASSWORD: agentworld-local
+      POSTGRES_DB: agentworld
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - agentworld-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentworld -d agentworld"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+volumes:
+  agentworld-postgres:

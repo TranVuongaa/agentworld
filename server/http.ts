@@ -43,6 +43,7 @@ interface Options {
   dev: boolean;
   browserToken: string;
   agentToken: string;
+  runtimeId?: string;
   nextHandler: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   nextUpgrade: (req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => Promise<void>;
   allowedOrigins: string[];
@@ -88,7 +89,7 @@ export function startHttp(o: Options) {
       }
     }
 
-    if (url.pathname === "/api/health") return send(res, 200, JSON.stringify({ ok: true }), "application/json");
+    if (url.pathname === "/api/health") return send(res, 200, JSON.stringify({ ok: true, ...(o.runtimeId ? { runtimeId: o.runtimeId } : {}) }), "application/json");
 
     await o.nextHandler(req, res);
   });

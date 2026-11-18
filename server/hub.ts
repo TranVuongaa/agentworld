@@ -16,7 +16,7 @@ export class Hub {
   private listeners = new Set<Listener>();
   private seq = 0;
 
-  constructor(readonly repo: RepoInfo, readonly slug: string, config: HqConfig, plan: PlanFile, setup: SetupState) {
+  constructor(readonly repo: RepoInfo, readonly slug: string, config: HqConfig, plan: PlanFile, setup: SetupState, private persist?: (kind: "config" | "plan", value: HqConfig | PlanFile) => void) {
     this.snap = {
       setup,
       sbx: { basePolicy: "unknown", proxy: null, globalKeys: [], agents: {}, checkedAt: now() },
@@ -124,12 +124,14 @@ export class Hub {
 
   configChanged() {
     saveConfig(this.repo.root, this.snap.config);
+    this.persist?.("config", structuredClone(this.snap.config));
     this.emit({ type: "config.updated", config: structuredClone(this.snap.config) });
   }
 
   planChanged() {
     const plan = { boards: this.snap.boards, tasks: this.snap.tasks };
     savePlan(this.repo.root, plan);
+    this.persist?.("plan", structuredClone(plan));
     if (this.snap.config.project.exportPlan) writePlanExport(this.repo.root, this.snap.config, plan);
   }
 

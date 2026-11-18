@@ -39,6 +39,7 @@ export function TopBar() {
 
   return (
     <header className="panel fixed left-4 right-4 top-[10px] z-10 flex h-[50px] items-center gap-4 px-3">
+      <a href="/dashboard" className="btn text-[14px]" title="Danh sách dự án">← Dự án</a>
       <div className="flex min-w-0 items-center gap-2.5">
         <Logo />
         <b className="whitespace-nowrap text-[22px] font-bold tracking-[0.02em]">TranVuong HQ</b>

@@ -25,7 +25,7 @@ function KeyEditor({ keys, onSet, onRemove, disabled }: { keys: string[]; onSet:
         {keys.map((k) => (
           <li key={k} className="chip font-term text-[15px]">
             {k} <span className="text-muted">••••</span>
-            <button className="ml-1 text-[12px]" aria-label={`Remove ${k} key`} onClick={() => window.confirm(`Remove the ${k} key from sbx?`) && onRemove(k)}>
+            <button className="ml-1 text-[12px]" aria-label={`Remove ${k} key`} onClick={() => window.confirm(`Remove the ${k} key?`) && onRemove(k)}>
               ✕
             </button>
           </li>
@@ -146,12 +146,11 @@ export function SandboxSettingsTab({ initialAgentId }: { initialAgentId?: string
       <section className="border-[3px] border-ink bg-white p-3">
         <SectionTitle>Service keys for {agent.name} only</SectionTitle>
         <p className="mb-2 text-[13px] text-muted">
-          The host proxy adds these to {agent.name}'s requests, so the key never enters the VM. HQ passes the value straight to{" "}
-          <code className="font-term text-[15px]">sbx secret set</code> and never stores it.
+          {snap.config.project.managed ? "Keys are encrypted for this project and applied only to this agent's sandbox. The host proxy adds them to requests." : <>The host proxy adds these to {agent.name}'s requests, so the key never enters the VM. HQ passes the value straight to <code className="font-term text-[15px]">sbx secret set</code> and never stores it.</>}
         </p>
         <KeyEditor
           keys={state?.keys ?? []}
-          disabled={sandboxExists ? undefined : `Start ${agent.name} once to add keys only for this sandbox. Keys for every sandbox are under This machine.`}
+          disabled={snap.config.project.managed || sandboxExists ? undefined : `Start ${agent.name} once to add keys only for this sandbox. Keys for every sandbox are under This machine.`}
           onSet={(service, value) => officeActions.setSecret(agent.id, service, value)}
           onRemove={(service) => officeActions.removeSecret(agent.id, service)}
         />
@@ -173,6 +172,12 @@ export function SandboxSettingsTab({ initialAgentId }: { initialAgentId?: string
         </div>
         <p className="mt-2 text-[12px] font-semibold text-[#a35d00]">⚠ Unlike service keys, these values do enter the VM. Use test or development credentials. Restart the agent after editing.</p>
       </section>
+
+      {snap.config.project.managed && <section className="border-[3px] border-ink bg-white p-3">
+        <SectionTitle>Service keys for this project</SectionTitle>
+        <p className="mb-2 text-[13px] text-muted">Encrypted keys apply to this project’s agents; an agent-specific key takes precedence.</p>
+        <KeyEditor keys={sbx.globalKeys} onSet={(service, value) => officeActions.setSecret(null, service, value)} onRemove={(service) => officeActions.removeSecret(null, service)} />
+      </section>}
 
       <h3 className="-mb-2 mt-2 text-[18px] font-bold">This machine — all sandboxes</h3>
       <p className="-mt-3 text-[13px] text-muted">These are sbx's machine-wide settings. They affect every sandbox on this machine, including ones HQ didn't create.</p>
@@ -197,10 +202,10 @@ export function SandboxSettingsTab({ initialAgentId }: { initialAgentId?: string
         </Field>
       </section>
 
-      <section className="border-[3px] border-ink bg-white p-3">
+      {!snap.config.project.managed && <section className="border-[3px] border-ink bg-white p-3">
         <SectionTitle>Service keys for every sandbox</SectionTitle>
         <KeyEditor keys={sbx.globalKeys} onSet={(service, value) => officeActions.setSecret(null, service, value)} onRemove={(service) => officeActions.removeSecret(null, service)} />
-      </section>
+      </section>}
     </div>
   );
 }

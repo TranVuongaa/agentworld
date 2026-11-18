@@ -12,6 +12,7 @@ import type { Hub } from "./hub";
 import { run } from "./lib/exec";
 import { parseCliJson } from "./lib/json";
 import { projectHome, sessionName } from "./paths";
+import { managedCredentialsEnabled } from "./lib/managedCredentials";
 
 export const MCP_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 
@@ -24,6 +25,11 @@ export class SbxMcp {
   state: McpState = { servers: [], attached: {}, error: null, checkedAt: new Date().toISOString() };
   private attachedFile: string;
   private queue: Promise<unknown> = Promise.resolve();
+  private registryNames = new Map<string, string>();
+
+  /** A distinct registry name for each managed project, while keeping UI names short. */
+  private projectPrefix() { return `aw-${this.hub.slug}-`; }
+  private registryName(name: string) { return this.registryNames.get(name) ?? (managedCredentialsEnabled() ? `${this.projectPrefix()}${name}` : name); }
 
   constructor(private hub: Hub, private runTerminal: RunTerminal) {
     this.attachedFile = join(projectHome(hub.slug), "mcp-attached.json");
@@ -65,9 +71,22 @@ export class SbxMcp {
       this.state.error = firstLine(r.stderr || r.stdout) || "Couldn't read sbx's MCP servers.";
       return this.publish();
     }
-    this.state.servers = (Array.isArray(data) ? data : (data.servers ?? [])).map(
-      (s): McpServer => ({ name: s.name, transport: s.transport ?? "", status: s.status ?? "unknown", nextStep: s.next_step ?? null }),
-    );
+    const rows = Array.isArray(data) ? data : (data.servers ?? []);
+    this.registryNames.clear();
+    const selected = new Map<string, McpServer>();
+    for (const s of rows) {
+      const prefix = this.projectPrefix();
+      const ours = managedCredentialsEnabled() && s.name.startsWith(prefix);
+      // Do not expose another managed project's registrations. Unprefixed
+      // registrations remain available for compatibility with local installs.
+      if (managedCredentialsEnabled() && /^aw-p[a-f0-9]{32}-/.test(s.name) && !ours) continue;
+      const name = ours ? s.name.slice(prefix.length) : s.name;
+      if (!MCP_NAME.test(name)) continue;
+      if (selected.has(name) && !ours) continue;
+      this.registryNames.set(name, s.name);
+      selected.set(name, { name, transport: s.transport ?? "", status: s.status ?? "unknown", nextStep: s.next_step?.replaceAll(s.name, name) ?? null });
+    }
+    this.state.servers = [...selected.values()];
     this.state.error = null;
     this.publish();
   }
@@ -80,7 +99,8 @@ export class SbxMcp {
       const url = input.url?.trim();
       const command = input.command?.trim();
       if ((!url && !command) || url?.startsWith("-") || command?.startsWith("-")) return this.hub.activity("config", null, "Give the MCP server a URL (or a command for a local server).");
-      const args = ["mcp", "add", name, "--skip-auth"];
+      const registryName = managedCredentialsEnabled() ? `${this.projectPrefix()}${name}` : name;
+      const args = ["mcp", "add", registryName, "--skip-auth"];
       if (url) args.push("--url", url);
       else args.push("--command", command!, ...(input.args?.length ? ["--args", input.args.join(",")] : []));
       const key = input.apiKey?.trim();
@@ -92,7 +112,7 @@ export class SbxMcp {
         return this.refresh();
       }
       if (key && url) {
-        const s = await run("sbx", ["secret", "set", `mcp:${name}:token`, "--force"], { timeoutMs: 20_000, input: key + "\n" });
+        const s = await run("sbx", ["secret", "set", `mcp:${registryName}:token`, "--force"], { timeoutMs: 20_000, input: key + "\n" });
         if (!s.ok) this.hub.activity("config", null, `Added ${name}, but couldn't store its key: ${firstLine(s.stderr).slice(0, 160)}`);
       }
       this.hub.activity("config", null, `Added MCP server ${name}`);
@@ -103,21 +123,22 @@ export class SbxMcp {
   /** Signs in to a server (opens the browser) in a terminal you can watch. */
   authorize(name: string) {
     if (!MCP_NAME.test(name)) return;
-    this.runTerminal(`setup:mcp-auth-${name}`, "sbx", ["mcp", "auth", name], () => void this.refresh());
+    this.runTerminal(`setup:mcp-auth-${name}`, "sbx", ["mcp", "auth", this.registryName(name)], () => void this.refresh());
   }
 
   /** Unregisters a server from sbx (every sandbox on this machine), and from every agent. */
   remove(name: string) {
     return this.serial(async () => {
       if (!MCP_NAME.test(name)) return;
-      const r = await run("sbx", ["mcp", "rm", name, "--force"], { timeoutMs: 30_000 });
+      const registryName = this.registryName(name);
+      const r = await run("sbx", ["mcp", "rm", registryName, "--force"], { timeoutMs: 30_000 });
       if (!r.ok) {
         this.hub.activity("config", null, `Couldn't remove MCP server ${name}: ${firstLine(r.stderr || r.stdout).slice(0, 200)}`);
         return this.refresh();
       }
       // The API key HQ may have stored for it (no-op when there's none).
       // sbx stores the key plus an ":endpoint" entry that binds it to the server's URL.
-      for (const secret of [`mcp:${name}:token`, `mcp:${name}:token:endpoint`]) await run("sbx", ["secret", "rm", secret, "--force"], { timeoutMs: 15_000 });
+      for (const secret of [`mcp:${registryName}:token`, `mcp:${registryName}:token:endpoint`]) await run("sbx", ["secret", "rm", secret, "--force"], { timeoutMs: 15_000 });
       let changed = false;
       for (const a of this.hub.snap.config.team)
         if (a.mcp?.includes(name)) {
@@ -159,6 +180,7 @@ export class SbxMcp {
     return this.serial(async () => {
       const agent = this.hub.cfg(agentId);
       if (!agent || agent.mode !== "sandbox" || !agent.mcp?.length) return;
+      if (managedCredentialsEnabled()) await this.refresh();
       await this.attach(agentId, agent.mcp);
       this.publish();
     });
@@ -175,7 +197,7 @@ export class SbxMcp {
     const sandbox = sessionName(this.hub.slug, agentId);
     const failed: string[] = [];
     for (const name of names) {
-      const r = await run("sbx", ["mcp", "load", name, "--sandbox", sandbox], { timeoutMs: 60_000 });
+      const r = await run("sbx", ["mcp", "load", this.registryName(name), "--sandbox", sandbox], { timeoutMs: 60_000 });
       if (r.ok) this.state.attached[agentId] = [...new Set([...(this.state.attached[agentId] ?? []), name])];
       else failed.push(`${name}: ${firstLine(r.stderr || r.stdout).replace(/^error: /, "").slice(0, 140)}`);
     }

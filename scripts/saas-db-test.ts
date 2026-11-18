@@ -1,0 +1,57 @@
+import assert from "node:assert/strict";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import nextEnv from "@next/env";
+import pg from "pg";
+import { Projects } from "../server/saas/projects";
+import { Secrets } from "../server/saas/secrets";
+import { authorizedProjectSession } from "../server/saas/sessionAuth";
+import { projectKeyName } from "../server/saas/keyNames";
+import { resolveStoredProjectKeys } from "../server/saas/projectKeys";
+
+nextEnv.loadEnvConfig(process.cwd());
+if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
+const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const owner = randomUUID(), stranger = randomUUID();
+const installation = String(Math.floor(Math.random() * 1000000000) + 1000000000);
+const githubUser = String(Math.floor(Math.random() * 1000000000) + 1000000000);
+try {
+  await db.query("INSERT INTO saas_users (id, github_user_id, github_login) VALUES ($1, $3, 'test-owner'), ($2, $3::bigint + 1, 'test-stranger')", [owner, stranger, githubUser]);
+  await db.query("INSERT INTO saas_github_installations (id, user_id, account_login) VALUES ($1, $2, 'test-owner')", [installation, owner]);
+  const projects = new Projects(db);
+  const project = await projects.create(owner, { name: "Test", repositoryFullName: "test-owner/example", repositoryId: installation, installationId: installation });
+  const token = randomBytes(32).toString("base64url");
+  const hash = createHash("sha256").update(token).digest("hex");
+  await db.query("INSERT INTO saas_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + interval '1 hour')", [hash, owner]);
+  assert(await authorizedProjectSession(db, `agentworld_session=${token}`, project.id));
+  assert.equal(await authorizedProjectSession(db, undefined, project.id), false);
+  assert.equal(await authorizedProjectSession(db, `agentworld_session=${token}; agentworld_session=${token}`, project.id), false);
+  assert.equal(await authorizedProjectSession(db, `agentworld_session=${token}`, randomUUID()), false);
+  assert.equal((await projects.list(owner)).length, 1);
+  assert.deepEqual(await projects.list(stranger), []);
+  assert.equal(await projects.get(stranger, project.id), null);
+  assert.equal(await projects.updateState(stranger, project.id, { bad: true }, {}), false);
+  assert.equal(await projects.updateState(owner, project.id, { team: ["agent"] }, { boards: [] }), true);
+  assert.deepEqual((await projects.get(owner, project.id))?.config, { team: ["agent"] });
+  const secrets = new Secrets(db, randomBytes(32));
+  assert.equal(await secrets.set(owner, project.id, "OPENAI_API_KEY", "test-secret"), true);
+  assert.equal(await secrets.get(stranger, project.id, "OPENAI_API_KEY"), null);
+  assert.deepEqual(await secrets.list(owner, project.id), ["OPENAI_API_KEY"]);
+  assert.deepEqual(await secrets.list(stranger, project.id), []);
+  assert.equal(await secrets.set(stranger, project.id, "OPENAI_API_KEY", "attacker"), false);
+  assert.equal(await secrets.get(owner, project.id, "OPENAI_API_KEY"), "test-secret");
+  const stored = await db.query<{ ciphertext: string }>("SELECT ciphertext FROM saas_secrets WHERE project_id = $1", [project.id]);
+  assert(!stored.rows[0].ciphertext.includes("test-secret"));
+  assert.equal(await secrets.set(owner, project.id, projectKeyName("openai", null), "project-key"), true);
+  assert.equal(await secrets.set(owner, project.id, projectKeyName("openai", "worker-1"), "agent-key"), true);
+  assert.deepEqual(await resolveStoredProjectKeys(secrets, owner, project.id, "worker-1"), { openai: "agent-key" });
+  assert.deepEqual(await resolveStoredProjectKeys(secrets, owner, project.id, "worker-2"), { openai: "project-key" });
+  assert.deepEqual(await resolveStoredProjectKeys(secrets, stranger, project.id, "worker-1"), {});
+  assert.equal(await secrets.remove(stranger, project.id, "OPENAI_API_KEY"), false);
+  assert.equal(await projects.remove(stranger, project.id), false);
+  assert.equal(await projects.remove(owner, project.id), true);
+  assert.equal(await secrets.get(owner, project.id, "OPENAI_API_KEY"), null);
+  console.log("PostgreSQL project ownership and secret isolation checks passed");
+} finally {
+  await db.query("DELETE FROM saas_users WHERE id = ANY($1::uuid[])", [[owner, stranger]]);
+  await db.end();
+}

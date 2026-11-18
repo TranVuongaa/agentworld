@@ -44,7 +44,15 @@
     "test:github-sync": "node scripts/run-test.mjs scripts/github-sync-test.mjs",
     "test:hmr": "node scripts/hmr-test.mjs",
     "test:access": "node scripts/run-test.mjs scripts/access-test.mjs",
-    "test:sbx-sync": "node scripts/run-test.mjs scripts/sbx-sync-test.mjs"
+    "test:sbx-sync": "node scripts/run-test.mjs scripts/sbx-sync-test.mjs",
+    "db:migrate": "node scripts/migrate-saas.mjs",
+    "test:saas": "node scripts/run-test.mjs scripts/saas-crypto-test.ts",
+    "test:saas-db": "node scripts/run-test.mjs scripts/saas-db-test.ts",
+    "local": "node scripts/local.mjs",
+    "test:managed-credentials": "node scripts/run-test.mjs scripts/managed-credentials-test.ts",
+    "test:github-app": "node scripts/run-test.mjs scripts/github-app-token-test.ts",
+    "test:mcp-project": "node scripts/run-test.mjs scripts/mcp-project-test.ts",
+    "test:project-gateway": "node scripts/run-test.mjs scripts/project-gateway-test.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",
@@ -59,6 +67,7 @@
     "@xterm/xterm": "^5.5.0",
     "framer-motion": "^11.18.2",
     "next": "^15.5.0",
+    "pg": "^8.23.1",
     "pixi.js": "^8.22.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
@@ -69,6 +78,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^26.6.5",
+    "@types/pg": "^8.23.1",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@types/ws": "^8.18.2",

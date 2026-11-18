@@ -20,8 +20,12 @@ import { log } from "./lib/log";
 import { projectHome, sessionName } from "./paths";
 import { POLICY_NOT_INITIALIZED, policyVerdict, runSetupChecks } from "./setup";
 import { ensureWorkspace, workspaceFor } from "./workspace";
+import { managedCredentialsEnabled } from "./lib/managedCredentials";
 
-const TERM_ENV = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>;
+// The UI token is read during startup; never propagate it to terminals or agents.
+const { HQ_UI_TOKEN: _uiToken, ...terminalEnv } = process.env;
+const TERM_ENV = { ...terminalEnv, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>;
+void _uiToken;
 /**
  * Shells you type in (Shell tab, Terminal panel): CLIs print links as real links (OSC 8), so a long
  * URL stays one clickable link instead of being cut across lines. Not for agent sessions: tmux
@@ -59,6 +63,7 @@ export class Sessions {
   onSessionDown: (agentId: string) => void = () => {};
   /** Called once an agent's sandbox exists after Start (to apply its network rules). */
   onSandboxReady: (agentId: string) => void = () => {};
+  prepareSandboxKeys: (agentId: string) => Promise<string[]> = async () => [];
   /** Called when an agent's sandbox is removed or recreated (what was attached to it is gone). */
   onSandboxRemoved: (agentId: string) => void = () => {};
   /** The agent's env file, if it has one (passed with --env-file / sourced). */
@@ -95,13 +100,17 @@ export class Sessions {
     const check = (cid: string) => setup.checks.find((c) => c.id === cid)?.status;
     if (agent.mode === "local" && agent.cli === "claude" && check("claude") !== "ok") return fail("Claude Code isn't installed. See the setup checklist.");
     if (agent.mode === "local" && agent.cli === "codex" && check("codex") !== "ok") return fail("Codex isn't installed on this machine. See the setup checklist, or run this agent in a sandbox.");
-    if (agent.mode === "sandbox" && agent.cli === "codex" && check("openai-secret") !== "ok")
+    if (agent.mode === "sandbox" && agent.cli === "codex" && check("openai-secret") !== "ok" && !managedCredentialsEnabled())
       return fail("Codex needs an OpenAI key in sbx. Run `sbx secret set openai --oauth` (Setup checklist → Run in terminal).");
 
     const name = this.name(id);
     this.onSessionDown(id);
     try {
       hub.setSession(id, { state: "starting", detail: "Preparing folder…", workspace: workspaceFor(agent, hub.slug) });
+      if (agent.mode === "sandbox" && managedCredentialsEnabled()) {
+        const keys = await this.prepareSandboxKeys(id);
+        if (agent.cli === "codex" && !keys.includes("openai")) throw new Error("Add an OpenAI key in Settings → Sandbox before starting Codex.");
+      }
       const dir = await ensureWorkspace(agent, hub.slug, hub.repo);
       const adapter = adapters[agent.cli];
       // App variables reach the agent in sandbox mode and in Local mode with tmux (not Local on Windows).

@@ -7,6 +7,8 @@ import { usesTmux } from "./backends";
 import { parseCliJson, sandboxList } from "./lib/json";
 import { has, run } from "./lib/exec";
 import type { RepoInfo } from "./repo";
+import { managedCredentialsEnabled, projectKeyNames } from "./lib/managedCredentials";
+import { projectGithubToken } from "./lib/githubCredentials";
 
 const SBX_DOCS = "https://docs.docker.com/ai/sandboxes/install/";
 const os = platform();
@@ -163,6 +165,10 @@ function checkRemote(repo: RepoInfo): Check {
 async function checkGithubSecret(sbxOk: boolean): Promise<Check> {
   const base = { id: "github-secret" as const, label: "GitHub access inside sandboxes", neededFor: "sandbox" as const };
   if (!sbxOk) return { ...base, status: "missing", detail: "Waiting for sbx.", fix: null };
+  if (managedCredentialsEnabled()) {
+    try { await projectGithubToken(); return { ...base, status: "ok", detail: "The project GitHub connection is applied to each agent sandbox.", fix: null }; }
+    catch { return { ...base, status: "missing", detail: "Reconnect this project's GitHub account.", fix: null }; }
+  }
   const r = await run("sbx", ["secret", "ls"], { timeoutMs: 10_000 });
   if (r.ok && /\bgithub\b/.test(r.stdout)) return { ...base, status: "ok", detail: "Stored in Docker's secret store; injected by the proxy.", fix: null };
   return {
@@ -183,6 +189,10 @@ async function checkCodex(): Promise<Check> {
 async function checkOpenAiSecret(sbxOk: boolean): Promise<Check> {
   const base = { id: "openai-secret" as const, label: "OpenAI sign-in for Codex agents", neededFor: "sandbox" as const };
   if (!sbxOk) return { ...base, status: "missing", detail: "Waiting for sbx.", fix: null };
+  if (managedCredentialsEnabled()) {
+    try { if ((await projectKeyNames()).some((key) => key.service === "openai")) return { ...base, status: "ok", detail: "A project OpenAI key is configured.", fix: null }; }
+    catch { return { ...base, status: "missing", detail: "Project credentials are unavailable.", fix: null }; }
+  }
   const r = await run("sbx", ["secret", "ls", "--json"], { timeoutMs: 10_000 });
   let has = false;
   try {

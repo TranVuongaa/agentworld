@@ -89,6 +89,7 @@ export interface ProjectConfig {
   repo: string; // "jsmastery-pro/askwell"
   path: string; // "~/developer/askwell"
   hqPort: number; // port sandboxes use to reach HQ via host.docker.internal
+  managed?: boolean; // project is controlled by the local project supervisor
   exportPlan?: boolean; // also write the plan to docs/plan.md
   officeName?: string; // the sign on the office wall; empty = "TranVuong HQ"
 }

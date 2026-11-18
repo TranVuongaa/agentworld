@@ -32,28 +32,51 @@ interface OfficeState {
  * HQ opens the UI with `?token=…`. With a token we talk to the real server;
  * without one the UI runs on the mock.
  */
-function hqToken(): string | null {
+function hqConnection(): { token: string | null; port?: string; projectId?: string } {
   const url = new URL(location.href);
-  const fromUrl = url.searchParams.get("token");
+  const selectedProject = url.searchParams.get("project");
+  if (selectedProject && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedProject)) {
+    try { sessionStorage.setItem("hq-project", selectedProject); sessionStorage.removeItem("hq-token"); sessionStorage.removeItem("hq-ws-port"); } catch { /* private mode */ }
+    url.searchParams.delete("project");
+    history.replaceState(null, "", url.toString());
+    return { token: null, projectId: selectedProject };
+  }
+  const fragment = new URLSearchParams(url.hash.slice(1));
+  const fromUrl = fragment.get("token") || url.searchParams.get("token");
   if (fromUrl) {
+    const candidate = fragment.get("ws_port") || url.searchParams.get("ws_port");
+    const port = candidate && /^(?:[1-9]\d{3,4})$/.test(candidate) && Number(candidate) <= 65535 && ["127.0.0.1", "localhost"].includes(location.hostname) ? candidate : undefined;
     try {
       sessionStorage.setItem("hq-token", fromUrl);
+      sessionStorage.removeItem("hq-project");
+      if (port) sessionStorage.setItem("hq-ws-port", port);
+      else sessionStorage.removeItem("hq-ws-port");
     } catch {
       /* private mode */
     }
     url.searchParams.delete("token");
+    url.searchParams.delete("ws_port");
+    if (fragment.has("token")) {
+      fragment.delete("token");
+      fragment.delete("ws_port");
+      url.hash = fragment.toString();
+    }
+    if (url.pathname === "/") url.pathname = "/office";
     history.replaceState(null, "", url.toString()); // keep the token out of history and screenshots
-    return fromUrl;
+    return { token: fromUrl, port };
   }
   try {
-    return sessionStorage.getItem("hq-token");
+    const port = sessionStorage.getItem("hq-ws-port");
+    const projectId = sessionStorage.getItem("hq-project");
+    if (projectId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId)) return { token: null, projectId };
+    return { token: sessionStorage.getItem("hq-token"), port: port && /^[1-9]\d{3,4}$/.test(port) && Number(port) <= 65535 && ["127.0.0.1", "localhost"].includes(location.hostname) ? port : undefined };
   } catch {
-    return null;
+    return { token: null };
   }
 }
 
-const token = hqToken();
-const source: OfficeDataSource = token ? createWsSource(token) : createMockSource();
+const { token, port, projectId } = hqConnection();
+const source: OfficeDataSource = token || projectId ? createWsSource(token, port, projectId) : createMockSource();
 
 export const useOffice = create<OfficeState>(() => ({
   snap: null,
@@ -62,7 +85,7 @@ export const useOffice = create<OfficeState>(() => ({
   terminalChunks: 0,
   speed: 1,
   presets: source.dev?.presets ?? null,
-  live: token !== null,
+  live: token !== null || !!projectId,
   workspaceInfo: {},
   connection: "connecting",
   source,

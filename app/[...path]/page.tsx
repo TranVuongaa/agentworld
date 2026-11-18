@@ -1,2 +1,3 @@
-// The original SPA serves its office for unrecognized paths as well as `/`.
-export { default } from '../page';
+// Keep old deep links into the office working.
+import OfficeEntry from "../OfficeEntry";
+export default function LegacyOffice() { return <OfficeEntry />; }

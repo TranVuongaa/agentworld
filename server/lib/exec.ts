@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { projectGithubToken } from "./githubCredentials";
 
 export interface RunResult {
   ok: boolean;
@@ -8,15 +9,20 @@ export interface RunResult {
 }
 
 /** Runs a program without a shell. Never throws; check `ok`. */
-export function run(cmd: string, args: string[], opts: { cwd?: string; timeoutMs?: number; input?: string } = {}): Promise<RunResult> {
+export async function run(cmd: string, args: string[], opts: { cwd?: string; timeoutMs?: number; input?: string } = {}): Promise<RunResult> {
+  let githubToken: string | null = null;
+  if (cmd === "gh") {
+    try { githubToken = await projectGithubToken(); }
+    catch (error) { return { ok: false, code: 1, stdout: "", stderr: error instanceof Error ? error.message : "GitHub credential unavailable" }; }
+  }
   return new Promise((resolve) => {
     const child = execFile(
       cmd,
       args,
-      { cwd: opts.cwd, timeout: opts.timeoutMs ?? 20_000, maxBuffer: 8 * 1024 * 1024, env: process.env },
+      { cwd: opts.cwd, timeout: opts.timeoutMs ?? 20_000, maxBuffer: 8 * 1024 * 1024, env: githubToken ? { ...process.env, GH_TOKEN: githubToken } : process.env },
       (err, stdout, stderr) => {
         const code = err && typeof (err as NodeJS.ErrnoException).code === "number" ? Number((err as NodeJS.ErrnoException).code) : err ? null : 0;
-        resolve({ ok: !err, code: err ? (code ?? 1) : 0, stdout: String(stdout), stderr: String(stderr || (err && !stderr ? err.message : "")) });
+        resolve({ ok: !err, code: err ? (code ?? 1) : 0, stdout: githubToken ? String(stdout).replaceAll(githubToken, "[redacted]") : String(stdout), stderr: githubToken ? String(stderr || (err && !stderr ? err.message : "")).replaceAll(githubToken, "[redacted]") : String(stderr || (err && !stderr ? err.message : "")) });
       },
     );
     if (opts.input !== undefined) child.stdin?.end(opts.input);
