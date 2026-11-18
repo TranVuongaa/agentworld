@@ -1,0 +1,11 @@
+node_modules
+.next
+*.tsbuildinfo
+.env*.local
+
+.next-dev
+next-env.d.ts
+dist-server
+.agentworld-test-*
+
+.validation/
