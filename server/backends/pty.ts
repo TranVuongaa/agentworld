@@ -6,11 +6,12 @@
 import { spawn as spawnPty, type IPty } from "@lydell/node-pty";
 import xtermHeadless from "@xterm/headless";
 import { run } from "../lib/exec";
+import { terminalEnvironment } from "../lib/terminalEnv";
 import type { ExitInfo, SessionBackend, TermSize } from "./types";
 
 const { Terminal } = xtermHeadless;
 
-const TERM_ENV = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>;
+const TERM_ENV = terminalEnvironment();
 
 interface Proc {
   pty: IPty;

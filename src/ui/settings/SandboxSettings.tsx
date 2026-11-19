@@ -15,7 +15,7 @@ const BASE: Record<BasePolicy, string> = {
 const SOURCE: Record<SbxRule["source"], string> = { hq: "HQ", kit: "agent kit", org: "your org", cli: "sbx CLI" };
 
 /** Add / remove service keys for one scope (an agent's sandbox, or every sandbox). */
-function KeyEditor({ keys, onSet, onRemove, disabled }: { keys: string[]; onSet: (service: string, value: string) => void; onRemove: (s: string) => void; disabled?: string }) {
+function KeyEditor({ keys, onSet, onRemove, disabled, allowGithub = true }: { keys: string[]; onSet: (service: string, value: string) => void; onRemove: (s: string) => void; disabled?: string; allowGithub?: boolean }) {
   const [service, setService] = useState<string>(SERVICE_KEYS[0]);
   const [value, setValue] = useState("");
   return (
@@ -45,7 +45,7 @@ function KeyEditor({ keys, onSet, onRemove, disabled }: { keys: string[]; onSet:
         >
           <Field label="Service">
             <select className="field" value={service} onChange={(e) => setService(e.target.value)}>
-              {SERVICE_KEYS.map((s) => (
+              {SERVICE_KEYS.filter((s) => allowGithub || s !== "github").map((s) => (
                 <option key={s}>{s}</option>
               ))}
             </select>
@@ -60,6 +60,24 @@ function KeyEditor({ keys, onSet, onRemove, disabled }: { keys: string[]; onSet:
       )}
     </div>
   );
+}
+
+function ManagedEnvEditor({ agentId, variables }: { agentId: string; variables: string[] }) {
+  const [name, setName] = useState("");
+  const [value, setValue] = useState("");
+  const valid = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(name) && !/[\r\n\0]/.test(value);
+  return <div>
+    <ul className="mb-2 flex flex-wrap gap-1.5">
+      {variables.length === 0 && <li className="text-[13px] text-muted">No web-managed variables</li>}
+      {variables.map((item) => <li key={item} className="chip font-term text-[15px]">{item} <span className="text-muted">••••</span> <button className="ml-1 text-[12px]" aria-label={`Remove ${item} variable`} onClick={() => window.confirm(`Remove ${item}?`) && officeActions.removeAgentEnv(agentId, item)}>✕</button></li>)}
+    </ul>
+    <form className="grid grid-cols-[150px_1fr_auto] items-end gap-2" onSubmit={(event) => { event.preventDefault(); if (!valid) return; officeActions.setAgentEnv(agentId, name, value); setName(""); setValue(""); }}>
+      <Field label="Variable name"><input className="field" value={name} maxLength={64} onChange={(event) => setName(event.target.value)} /></Field>
+      <Field label="Value"><input className="field" type="password" autoComplete="off" value={value} maxLength={8192} onChange={(event) => setValue(event.target.value)} /></Field>
+      <button className="btn" type="submit" disabled={!valid}>Store</button>
+    </form>
+    <p className="mt-2 text-[12px] text-muted">Values are stored encrypted and are not displayed again. A protected temporary file is used while the local server runs. Restart the agent after changes; values enter its environment.</p>
+  </div>;
 }
 
 export function SandboxSettingsTab({ initialAgentId }: { initialAgentId?: string }) {
@@ -150,6 +168,7 @@ export function SandboxSettingsTab({ initialAgentId }: { initialAgentId?: string
         </p>
         <KeyEditor
           keys={state?.keys ?? []}
+          allowGithub={snap.config.project.githubAuth !== "app"}
           disabled={snap.config.project.managed || sandboxExists ? undefined : `Start ${agent.name} once to add keys only for this sandbox. Keys for every sandbox are under This machine.`}
           onSet={(service, value) => officeActions.setSecret(agent.id, service, value)}
           onRemove={(service) => officeActions.removeSecret(agent.id, service)}
@@ -157,26 +176,20 @@ export function SandboxSettingsTab({ initialAgentId }: { initialAgentId?: string
       </section>
 
       <section className="border-[3px] border-ink bg-white p-3">
-        <SectionTitle>App variables (env file)</SectionTitle>
-        <p className="mb-2 text-[13px] text-muted">
-          For values your app needs to run and test (DATABASE_URL, STRIPE_KEY…). One <code className="font-term text-[15px]">KEY=value</code> per line. HQ never reads or commits this file. When the agent starts, the values become
-          environment variables in its session and in its Shell tab — not a .env file in the project. Restart the agent after editing.
-        </p>
-        <div className="flex items-center gap-2">
-          <code className="min-w-0 flex-1 truncate border-2 border-ink bg-cream px-2 py-0.5 font-term text-[16px]" title={state?.envFile.path}>
-            {state?.envFile.path ?? "—"}
-          </code>
-          <button className="btn text-[13px]" onClick={() => officeActions.openEnvFile(agent.id)}>
-            {state?.envFile.exists ? "Open" : "Create & open"}
-          </button>
-        </div>
-        <p className="mt-2 text-[12px] font-semibold text-[#a35d00]">⚠ Unlike service keys, these values do enter the VM. Use test or development credentials. Restart the agent after editing.</p>
+        <SectionTitle>App variables</SectionTitle>
+        {snap.config.project.managed ? <>
+          <ManagedEnvEditor key={agent.id} agentId={agent.id} variables={state?.envFile.variables ?? []} />
+          {state?.envFile.exists && snap.config.project.githubAuth !== "app" && <p className="mt-2 text-[12px] text-muted">An existing local env file is also loaded; web-managed variables take precedence. <button className="underline" onClick={() => officeActions.openEnvFile(agent.id)}>Open local file</button></p>}
+        </> : <>
+          <p className="mb-2 text-[13px] text-muted">One KEY=value per line. Values enter the agent's environment; restart after editing.</p>
+          <div className="flex items-center gap-2"><code className="min-w-0 flex-1 truncate border-2 border-ink bg-cream px-2 py-0.5 font-term text-[16px]" title={state?.envFile.path}>{state?.envFile.path ?? "—"}</code><button className="btn text-[13px]" onClick={() => officeActions.openEnvFile(agent.id)}>{state?.envFile.exists ? "Open" : "Create & open"}</button></div>
+        </>}
       </section>
 
       {snap.config.project.managed && <section className="border-[3px] border-ink bg-white p-3">
         <SectionTitle>Service keys for this project</SectionTitle>
         <p className="mb-2 text-[13px] text-muted">Encrypted keys apply to this project’s agents; an agent-specific key takes precedence.</p>
-        <KeyEditor keys={sbx.globalKeys} onSet={(service, value) => officeActions.setSecret(null, service, value)} onRemove={(service) => officeActions.removeSecret(null, service)} />
+        <KeyEditor allowGithub={snap.config.project.githubAuth !== "app"} keys={sbx.globalKeys} onSet={(service, value) => officeActions.setSecret(null, service, value)} onRemove={(service) => officeActions.removeSecret(null, service)} />
       </section>}
 
       <h3 className="-mb-2 mt-2 text-[18px] font-bold">This machine — all sandboxes</h3>
@@ -187,24 +200,24 @@ export function SandboxSettingsTab({ initialAgentId }: { initialAgentId?: string
         <p className="text-[15px]">{BASE[sbx.basePolicy]}</p>
         <p className="mt-1 text-[12px] text-muted">
           Set once with <code className="font-term text-[14px]">sbx policy init</code>. Changing it means <code className="font-term text-[14px]">sbx policy reset</code>, which deletes every rule on this
-          machine, so HQ doesn't do it. HQ always allows <code className="font-term text-[14px]">localhost:{port}</code> and{" "}
-          <code className="font-term text-[14px]">host.docker.internal:{port}</code> so agents can reach it.{" "}
+          machine, so HQ doesn't do it. {snap.config.project.githubAuth === "app" ? "Each agent sandbox gets its own access rules for" : "HQ allows"} <code className="font-term text-[14px]">localhost:{port}</code> and{" "}
+          <code className="font-term text-[14px]">host.docker.internal:{port}</code> so agents can reach the coordinator.{" "}
           <a className="underline" href="https://docs.docker.com/ai/sandboxes/security/" target="_blank" rel="noreferrer">
             Docs ↗
           </a>
         </p>
       </section>
 
-      <section className="border-[3px] border-ink bg-white p-3">
+      {snap.config.project.githubAuth !== "app" && <section className="border-[3px] border-ink bg-white p-3">
         <SectionTitle>Upstream proxy</SectionTitle>
         <Field label="Proxy URL" hint="Optional. All sandbox traffic goes through this proxy. Leave empty for none.">
           <CommitInput className="field font-term text-[17px]" value={sbx.proxy ?? ""} placeholder="http://proxy.internal:3128" onCommit={(v) => officeActions.setProxy(v.trim() || null)} />
         </Field>
-      </section>
+      </section>}
 
       {!snap.config.project.managed && <section className="border-[3px] border-ink bg-white p-3">
         <SectionTitle>Service keys for every sandbox</SectionTitle>
-        <KeyEditor keys={sbx.globalKeys} onSet={(service, value) => officeActions.setSecret(null, service, value)} onRemove={(service) => officeActions.removeSecret(null, service)} />
+        <KeyEditor allowGithub={snap.config.project.githubAuth !== "app"} keys={sbx.globalKeys} onSet={(service, value) => officeActions.setSecret(null, service, value)} onRemove={(service) => officeActions.removeSecret(null, service)} />
       </section>}
     </div>
   );

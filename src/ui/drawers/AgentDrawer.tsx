@@ -202,6 +202,7 @@ const SESSION_COLOR = { running: "#00e436", starting: "#29adff", stopped: "#8376
 function SessionBar({ agent, status }: { agent: AgentConfig; status: AgentStatus }) {
   const s = status.session;
   const live = useOffice((st) => st.live);
+  const appMode = useOffice((st) => st.snap?.config.project.githubAuth === "app");
   return (
     <div className="flex items-center gap-2 border-b-[3px] border-ink bg-cream px-3 py-1.5 text-[13px]">
       <span className={`chip chip-dot ${s.state === "starting" ? "blink" : ""}`} style={{ ["--c" as string]: SESSION_COLOR[s.state] }}>
@@ -210,12 +211,14 @@ function SessionBar({ agent, status }: { agent: AgentConfig; status: AgentStatus
       <span className="min-w-0 flex-1 truncate font-term text-[15px] text-muted" title={s.workspace ?? undefined}>
         {s.state === "starting" ? s.detail : (s.workspace ?? "")}
       </span>
-      {s.workspace && live && (
+      {s.workspace && live && !appMode && (
         <button className="btn px-2 text-[12px]" onClick={() => officeActions.openWorkspace(agent.id)} title="Open the agent's folder">
           Open folder
         </button>
       )}
-      {s.state === "running" || s.state === "starting" ? (
+      {appMode && s.state === "failed" && s.detail?.startsWith("Existing session is unverified.") ? (
+        <button className="btn px-2 text-[12px]" onClick={() => { if (window.confirm("Stop the existing unverified session? Its workspace is kept.")) officeActions.stopAgent(agent.id); }}>Stop existing session</button>
+      ) : s.state === "running" || s.state === "starting" ? (
         <button className="btn px-2 text-[12px]" disabled={s.state === "starting"} onClick={() => officeActions.stopAgent(agent.id)}>
           Stop
         </button>

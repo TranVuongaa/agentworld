@@ -24,6 +24,11 @@ if (process.env.SAAS_LOCAL_DEV !== '1' || app.protocol !== 'http:' || app.hostna
 const key = process.env.SAAS_ENCRYPTION_KEY || '';
 if (!/^[A-Za-z0-9+/]{43}=$/.test(key) || Buffer.from(key, 'base64').length !== 32 || Buffer.from(key, 'base64').toString('base64') !== key) throw new Error('SAAS_ENCRYPTION_KEY must be a base64-encoded 32-byte key in .env.local');
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required in .env.local');
+const githubAuth = process.env.SAAS_GITHUB_AUTH || 'gh';
+if (!['gh', 'app'].includes(githubAuth)) throw new Error('SAAS_GITHUB_AUTH must be gh or app');
+if (githubAuth === 'app' && (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET || !process.env.GITHUB_APP_PRIVATE_KEY_PATH || !existsSync(process.env.GITHUB_APP_PRIVATE_KEY_PATH))) {
+  throw new Error('GitHub App mode requires GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET and an existing GITHUB_APP_PRIVATE_KEY_PATH in .env.local');
+}
 function run(file, args) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(file, args, { cwd: root, env: process.env, stdio: 'inherit' });
@@ -76,7 +81,7 @@ const restartGateway = { name: 'restart-local-gateway', setup(builder) {
     if (!stopping) startGateway();
   });
 } };
-build = await context({ absWorkingDir: root, entryPoints: { main: 'server/main.ts', saasGateway: 'server/saasGateway.ts' }, outdir: 'dist-server', outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external', logLevel: 'warning', plugins: [restartGateway] });
+build = await context({ absWorkingDir: root, entryPoints: { main: 'server/main.ts', saasGateway: 'server/saasGateway.ts', saasRuntime: 'app/saas/lib/runtime.ts' }, outdir: 'dist-server', outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm', target: 'node20', packages: 'external', logLevel: 'warning', plugins: [restartGateway] });
 async function stop(signal = 'SIGTERM') {
   if (stopping) return;
   stopping = true;

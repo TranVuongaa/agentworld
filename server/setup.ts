@@ -59,8 +59,8 @@ export const POLICY_NOT_INITIALIZED = /not been initialized|sbx policy init/i;
  * Newer sbx (0.50+) may print the verdict on stderr and add terminal escape codes, so both
  * streams are read with the codes removed.
  */
-export async function policyVerdict(host: string): Promise<{ verdict: "allowed" | "denied" | null; out: string }> {
-  const r = await run("sbx", ["policy", "check", "network", host], { timeoutMs: 10_000 });
+export async function policyVerdict(host: string, sandbox?: string): Promise<{ verdict: "allowed" | "denied" | null; out: string }> {
+  const r = await run("sbx", ["policy", "check", "network", ...(sandbox ? ["--sandbox", sandbox] : []), host], { timeoutMs: 10_000 });
   // eslint-disable-next-line no-control-regex
   const out = `${r.stdout}\n${r.stderr}`.replace(/\x1b(\[[0-9;?]*[ -\/]*[@-~]|\][^\x07\x1b]*(\x07|\x1b\\)|[@-_])/g, "");
   const m = out.match(/\b(Allowed|Denied):/);
@@ -192,6 +192,7 @@ async function checkOpenAiSecret(sbxOk: boolean): Promise<Check> {
   if (managedCredentialsEnabled()) {
     try { if ((await projectKeyNames()).some((key) => key.service === "openai")) return { ...base, status: "ok", detail: "A project OpenAI key is configured.", fix: null }; }
     catch { return { ...base, status: "missing", detail: "Project credentials are unavailable.", fix: null }; }
+    if (process.env.HQ_GITHUB_APP === "1") return { ...base, status: "missing", detail: "Add an OpenAI key in Settings → Sandbox for this project or agent.", fix: null };
   }
   const r = await run("sbx", ["secret", "ls", "--json"], { timeoutMs: 10_000 });
   let has = false;

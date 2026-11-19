@@ -304,6 +304,20 @@ export function createMockSource(): OfficeDataSource {
       world.emit({ type: "sbx.updated", sbx: structuredClone(world.snap.sbx) });
     },
 
+    setAgentEnv(agentId, name) {
+      const env = world.snap.sbx.agents[agentId]?.envFile;
+      if (!env) return;
+      env.variables = [...new Set([...(env.variables ?? []), name])];
+      world.emit({ type: "sbx.updated", sbx: structuredClone(world.snap.sbx) });
+    },
+
+    removeAgentEnv(agentId, name) {
+      const env = world.snap.sbx.agents[agentId]?.envFile;
+      if (!env) return;
+      env.variables = (env.variables ?? []).filter((item) => item !== name);
+      world.emit({ type: "sbx.updated", sbx: structuredClone(world.snap.sbx) });
+    },
+
     openEnvFile(agentId) {
       hostCmd(agentId, `open ${world.snap.sbx.agents[agentId]?.envFile.path ?? "?"} (mock: nothing opens)`);
     },

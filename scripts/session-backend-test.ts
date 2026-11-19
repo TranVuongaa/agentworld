@@ -4,6 +4,8 @@
 //
 //   node scripts/run-test.mjs scripts/session-backend-test.ts
 
+import assert from "node:assert/strict";
+import { terminalEnvironment } from "../server/lib/terminalEnv";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +13,14 @@ import { run } from "../server/lib/exec";
 import { ptyBackend } from "../server/backends/pty";
 import { tmuxBackend } from "../server/backends/tmux";
 import type { SessionBackend } from "../server/backends/types";
+
+const filteredEnv = terminalEnvironment({ HQ_UI_TOKEN: "fixture-ui-token", HQ_STATE_FILE: "/private/state", HQ_RUNTIME_ID: "private-id", SAAS_LOCAL_BOOT_TOKEN: "boot-token", AGENTWORLD_GIT_TOKEN: "git-token", PATH: "/bin" });
+assert.equal(filteredEnv.HQ_UI_TOKEN, undefined);
+assert.equal(filteredEnv.HQ_STATE_FILE, undefined);
+assert.equal(filteredEnv.HQ_RUNTIME_ID, undefined);
+assert.equal(filteredEnv.SAAS_LOCAL_BOOT_TOKEN, undefined);
+assert.equal(filteredEnv.AGENTWORLD_GIT_TOKEN, undefined);
+assert.equal(filteredEnv.PATH, "/bin");
 
 const FAKE_AGENT = [
   "process.stdin.setEncoding('utf8');",

@@ -5,7 +5,7 @@ export class Secrets {
   constructor(private readonly db: Pool, private readonly key: Buffer) {}
 
   async set(ownerId: string, projectId: string, name: string, value: string): Promise<boolean> {
-    if (!/^[A-Z][A-Z0-9_]{0,255}$/.test(name)) throw new Error("Invalid secret name");
+    if (!/^[A-Z][A-Z0-9_]{0,319}$/.test(name)) throw new Error("Invalid secret name");
     const ciphertext = encryptSecret(this.key, projectId, name, value);
     const result = await this.db.query(`INSERT INTO saas_secrets (project_id, name, ciphertext)
       SELECT id, $3, $4 FROM saas_projects WHERE owner_id = $1 AND id = $2

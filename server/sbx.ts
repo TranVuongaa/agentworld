@@ -2,7 +2,8 @@
 // keys, proxy) and syncs each agent's allowed/blocked domains. It only ever
 // removes rules it added itself (tracked in ~/.jsmhq/<project>/sbx-owned.json).
 
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BasePolicy, SbxAgentState, SbxPort, SbxRule, SbxState } from "../src/data/types";
 import type { Hub } from "./hub";
@@ -11,7 +12,8 @@ import { run } from "./lib/exec";
 import { log } from "./lib/log";
 import { projectHome, sessionName } from "./paths";
 import { policyVerdict } from "./setup";
-import { managedCredentialsEnabled, projectKeyNames, removeProjectKey, resolveProjectKeys, setProjectKey } from "./lib/managedCredentials";
+import { uncoveredGlobalCredentials } from "./saas/sandboxCredentials";
+import { listAllManagedEnv, managedCredentialsEnabled, projectKeyNames, removeManagedEnv, removeProjectKey, resolveManagedEnv, resolveProjectKeys, setManagedEnv, setProjectKey } from "./lib/managedCredentials";
 
 interface RawRule {
   id: string;
@@ -41,6 +43,13 @@ export class Sbx {
   private ownedFile: string;
   private owned: Record<string, string[]>; // sandbox name → "allow foo.com" entries HQ added
   private syncQueues = new Map<string, Promise<void>>();
+  private envQueue: Promise<unknown> = Promise.resolve();
+  private managedEnvDir: string | null;
+  private serializeEnv<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.envQueue.then(fn, fn);
+    this.envQueue = next.catch(() => {});
+    return next;
+  }
   private keyQueue: Promise<unknown> = Promise.resolve();
   private serializeKeys<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.keyQueue.then(fn, fn);
@@ -49,6 +58,8 @@ export class Sbx {
   }
 
   constructor(private hub: Hub) {
+    this.managedEnvDir = managedCredentialsEnabled() ? mkdtempSync(join(tmpdir(), "agentworld-env-")) : null;
+    if (this.managedEnvDir) process.once("exit", () => this.cleanupManagedEnv());
     this.ownedFile = join(projectHome(hub.slug), "sbx-owned.json");
     this.owned = (existsSync(this.ownedFile) && parseCliJson<Record<string, string[]>>(readFileSync(this.ownedFile, "utf8"))) || {};
     this.state = { basePolicy: "unknown", proxy: null, globalKeys: [], agents: {}, checkedAt: new Date().toISOString() };
@@ -64,6 +75,43 @@ export class Sbx {
 
   envFile(agentId: string) {
     return join(projectHome(this.hub.slug), `${agentId}.env`);
+  }
+
+  effectiveEnvFile(agentId: string): string | null {
+    const file = this.managedEnvDir ? join(this.managedEnvDir, `${agentId}.env`) : this.envFile(agentId);
+    return existsSync(file) ? file : null;
+  }
+
+  /** Materialize only for the local agent process; the encrypted database is authoritative. */
+  private async writeManagedEnv(agentId: string): Promise<void> {
+    if (!this.managedEnvDir) return;
+    const values = await resolveManagedEnv(agentId);
+    const legacy = this.envFile(agentId);
+    const previous = existsSync(legacy) ? readFileSync(legacy, "utf8") : "";
+    const file = join(this.managedEnvDir, `${agentId}.env`);
+    if (!previous && !Object.keys(values).length) { rmSync(file, { force: true }); return; }
+    const lines = Object.entries(values).map(([name, value]) => `${name}=${value}`);
+    const temp = `${file}.tmp`;
+    writeFileSync(temp, `${previous}${previous && !previous.endsWith("\n") ? "\n" : ""}${lines.join("\n")}\n`, { mode: 0o600 });
+    renameSync(temp, file);
+  }
+
+  prepareManagedEnv(agentId: string): Promise<void> {
+    return this.serializeEnv(() => this.writeManagedEnv(agentId));
+  }
+
+  async changeManagedEnv(agentId: string, name: string, value: string | null): Promise<void> {
+    if (!this.managedEnvDir) throw new Error("Web environment variables are unavailable");
+    await this.serializeEnv(async () => {
+      if (value === null) await removeManagedEnv(agentId, name);
+      else await setManagedEnv(agentId, name, value);
+      await this.writeManagedEnv(agentId);
+    });
+    await this.refresh();
+  }
+
+  cleanupManagedEnv(): void {
+    if (this.managedEnvDir) rmSync(this.managedEnvDir, { recursive: true, force: true });
   }
 
   private publish() {
@@ -93,8 +141,9 @@ export class Sbx {
 
   /** Re-reads everything from sbx and publishes it. */
   async refresh() {
+    const envLists = managedCredentialsEnabled() ? await listAllManagedEnv().catch(() => ({} as Record<string, string[]>)) : null;
     if (!this.hub.snap.setup.sandboxReady) {
-      this.state.agents = Object.fromEntries(this.hub.snap.config.team.map((a) => [a.id, this.emptyAgent(a.id)]));
+      this.state.agents = Object.fromEntries(this.hub.snap.config.team.map((a) => [a.id, { ...this.emptyAgent(a.id), envFile: { ...this.emptyAgent(a.id).envFile, variables: envLists?.[a.id] } }]));
       return this.publish();
     }
     const [rules, keysOut, proxyOut, base] = await Promise.all([
@@ -130,7 +179,7 @@ export class Sbx {
         rules: sandboxRules,
         // sbx reports a sandbox scope as the bare sandbox name.
         keys: managedKeys ? managedKeys.filter((s) => s.agentId === a.id).map((s) => s.service) : secrets.filter((s) => s.type === "service" && (s.scope === name || s.scope === `sandbox:${name}`)).map((s) => s.name),
-        envFile: { path: this.envFile(a.id), exists: existsSync(this.envFile(a.id)) },
+        envFile: { path: this.envFile(a.id), exists: existsSync(this.envFile(a.id)), variables: envLists?.[a.id] },
         syncError: prevErrors[a.id]?.syncError ?? null,
         approvals: prevErrors[a.id]?.approvals ?? [],
         ports: prevErrors[a.id]?.ports ?? [],
@@ -467,18 +516,29 @@ export class Sbx {
     }
   }
 
+  private async globalServiceKeys(): Promise<{ name: string; scope: string; type?: string }[]> {
+    const listed = await run("sbx", ["secret", "ls", "--json"], { timeoutMs: 10_000 });
+    const data = listed.ok ? parseCliJson<{ secrets?: { name: string; scope: string; type?: string }[] }>(listed.stdout) : null;
+    if (!data || !Array.isArray(data.secrets)) throw new Error("Could not verify machine-wide sandbox credentials");
+    return data.secrets;
+  }
+
   /** Install this project's keys in one sandbox before starting its agent. */
   async prepareManagedKeys(agentId: string): Promise<string[]> {
     if (!managedCredentialsEnabled()) return [];
     return this.serializeKeys(async () => {
     const values = await resolveProjectKeys(agentId);
+    if (this.hub.snap.config.project.githubAuth === "app") {
+      const uncovered = uncoveredGlobalCredentials(await this.globalServiceKeys(), values);
+      if (uncovered.length) throw new Error(`Configure project keys for ${uncovered.join(", ")} before starting this agent, or use an isolated sandbox daemon.`);
+    }
     for (const [service, value] of Object.entries(values)) {
       const result = await run("sbx", ["secret", "set", service, "--sandbox", this.name(agentId), "--force"], { timeoutMs: 20_000, input: value + "\n" });
       if (!result.ok) throw new Error(`Could not configure ${service} for this agent`);
     }
     const configured = Object.keys(values);
-    if (!configured.includes("openai")) {
-      // Local development can still use an existing machine-wide Codex login.
+    if (!configured.includes("openai") && this.hub.snap.config.project.githubAuth !== "app") {
+      // Local GitHub CLI development can still use an existing machine-wide Codex login.
       const listed = await run("sbx", ["secret", "ls", "--json"], { timeoutMs: 10_000 });
       const entries = parseCliJson<{ secrets?: { name: string; scope: string }[] }>(listed.stdout)?.secrets ?? [];
       if (entries.some((entry) => entry.name === "openai" && entry.scope === "global")) configured.push("openai");
@@ -526,6 +586,16 @@ export class Sbx {
 
   async removeKey(agentId: string | null, service: string) {
     if (managedCredentialsEnabled()) return this.serializeKeys(async () => {
+      if (this.hub.snap.config.project.githubAuth === "app" && service !== "github") {
+        const global = (await this.globalServiceKeys()).some((key) => key.type === "service" && key.scope === "global" && key.name === service);
+        if (global) {
+          const projectKeys = await projectKeyNames();
+          const remaining = projectKeys.filter((key) => !(key.service === service && key.agentId === agentId));
+          const affected = this.hub.snap.config.team.filter((agent) => !agentId || agent.id === agentId);
+          const wouldExpose = affected.some((agent) => !remaining.some((key) => key.service === service && (key.agentId === null || key.agentId === agent.id)));
+          if (wouldExpose) throw new Error(`Cannot remove ${service}: this would expose the machine-wide key to an agent sandbox. Remove the global key or use an isolated sandbox daemon first.`);
+        }
+      }
       await removeProjectKey(agentId, service);
       for (const agent of this.hub.snap.config.team.filter((a) => !agentId || a.id === agentId)) {
         const keys = await resolveProjectKeys(agent.id);

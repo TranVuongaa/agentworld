@@ -79,6 +79,7 @@ export class SbxMcp {
       const ours = managedCredentialsEnabled() && s.name.startsWith(prefix);
       // Do not expose another managed project's registrations. Unprefixed
       // registrations remain available for compatibility with local installs.
+      if (managedCredentialsEnabled() && this.hub.snap.config.project.githubAuth === "app" && !ours) continue;
       if (managedCredentialsEnabled() && /^aw-p[a-f0-9]{32}-/.test(s.name) && !ours) continue;
       const name = ours ? s.name.slice(prefix.length) : s.name;
       if (!MCP_NAME.test(name)) continue;
@@ -98,6 +99,7 @@ export class SbxMcp {
       if (!MCP_NAME.test(name)) return this.hub.activity("config", null, `MCP server name "${input.name}" isn't valid: use letters, numbers, - or _.`);
       const url = input.url?.trim();
       const command = input.command?.trim();
+      if (command && this.hub.snap.config.project.githubAuth === "app") return this.hub.activity("config", null, "Host commands are unavailable for this project; use a remote MCP server.");
       if ((!url && !command) || url?.startsWith("-") || command?.startsWith("-")) return this.hub.activity("config", null, "Give the MCP server a URL (or a command for a local server).");
       const registryName = managedCredentialsEnabled() ? `${this.projectPrefix()}${name}` : name;
       const args = ["mcp", "add", registryName, "--skip-auth"];

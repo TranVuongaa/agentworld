@@ -83,6 +83,8 @@ export function createWsSource(token: string | null, localPort?: string, project
     removeSecret: (id, name) => send("removeSecret", id, name),
     setProxy: (url) => send("setProxy", url),
     openEnvFile: (id) => send("openEnvFile", id),
+    setAgentEnv: (id, name, value) => send("setAgentEnv", id, name, value),
+    removeAgentEnv: (id, name) => send("removeAgentEnv", id, name),
     refreshSbx: () => send("refreshSbx"),
     updateWorkflow: (patch) => send("updateWorkflow", patch),
     updateProject: (patch) => send("updateProject", patch),

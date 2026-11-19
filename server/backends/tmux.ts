@@ -3,10 +3,11 @@
 
 import { spawn as spawnPty } from "@lydell/node-pty";
 import { run, shq } from "../lib/exec";
+import { terminalEnvironment } from "../lib/terminalEnv";
 import * as tmux from "./tmuxCli";
 import type { LaunchSpec, SessionBackend } from "./types";
 
-const TERM_ENV = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>;
+const TERM_ENV = terminalEnvironment();
 
 /** Quotes for a POSIX shell only when needed, so simple commands stay readable. */
 const q = (s: string) => (/^[A-Za-z0-9_\-.,:/=@%+]+$/.test(s) ? s : shq(s));

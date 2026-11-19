@@ -206,6 +206,8 @@ export const officeActions = {
   removeSecret: (agentId: string | null, service: string) => source.removeSecret(agentId, service),
   setProxy: (url: string | null) => source.setProxy(url),
   openEnvFile: (id: string) => source.openEnvFile(id),
+  setAgentEnv: (id: string, name: string, value: string) => source.setAgentEnv(id, name, value),
+  removeAgentEnv: (id: string, name: string) => source.removeAgentEnv(id, name),
   refreshSbx: () => source.refreshSbx(),
   answerApproval: (agentId: string, approvalId: string, decision: "allow" | "dismiss") => source.answerApproval(agentId, approvalId, decision),
   updateWorkflow: source.updateWorkflow.bind(source),

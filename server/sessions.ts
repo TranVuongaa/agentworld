@@ -14,18 +14,17 @@ import type { Hub } from "./hub";
 import { sessionBackend, type LaunchSpec, type TermHandle } from "./backends";
 import { resolveCommand } from "./backends/pty";
 import { loadEnvFile } from "./backends/tmux";
-import { sandboxList } from "./lib/json";
+import { parseCliJson, sandboxList } from "./lib/json";
 import { run } from "./lib/exec";
 import { log } from "./lib/log";
+import { terminalEnvironment } from "./lib/terminalEnv";
 import { projectHome, sessionName } from "./paths";
 import { POLICY_NOT_INITIALIZED, policyVerdict, runSetupChecks } from "./setup";
 import { ensureWorkspace, workspaceFor } from "./workspace";
 import { managedCredentialsEnabled } from "./lib/managedCredentials";
+import { SessionProof } from "./saas/sessionProof";
 
-// The UI token is read during startup; never propagate it to terminals or agents.
-const { HQ_UI_TOKEN: _uiToken, ...terminalEnv } = process.env;
-const TERM_ENV = { ...terminalEnv, TERM: "xterm-256color", COLORTERM: "truecolor" } as Record<string, string>;
-void _uiToken;
+const TERM_ENV = terminalEnvironment();
 /**
  * Shells you type in (Shell tab, Terminal panel): CLIs print links as real links (OSC 8), so a long
  * URL stays one clickable link instead of being cut across lines. Not for agent sessions: tmux
@@ -51,6 +50,7 @@ const SANDBOX_SHELL = `export FORCE_HYPERLINK=1; [ -x ${SANDBOX_BROWSER} ] && ex
 
 export class Sessions {
   readonly backend = sessionBackend();
+  private readonly sessionProof: SessionProof;
   private terms = new Map<string, TermHandle>();
   private sizes = new Map<string, { cols: number; rows: number }>();
   private fixes = new Map<string, IPty>();
@@ -59,11 +59,21 @@ export class Sessions {
   private closing = new WeakSet<IPty>(); // closed on purpose: no "[shell closed]" line
   private shellGen = new Map<string, number>();
   private policyOk = false;
+  private lifecycle = new Map<string, Promise<unknown>>();
+
+  private serialize<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.lifecycle.get(id) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(operation);
+    this.lifecycle.set(id, next);
+    void next.finally(() => { if (this.lifecycle.get(id) === next) this.lifecycle.delete(id); }).catch(() => {});
+    return next;
+  }
   /** Called whenever an agent's Claude Code session goes away (stop, restart, crash). */
   onSessionDown: (agentId: string) => void = () => {};
   /** Called once an agent's sandbox exists after Start (to apply its network rules). */
   onSandboxReady: (agentId: string) => void = () => {};
   prepareSandboxKeys: (agentId: string) => Promise<string[]> = async () => [];
+  prepareAgentEnv: (agentId: string) => Promise<void> = async () => {};
   /** Called when an agent's sandbox is removed or recreated (what was attached to it is gone). */
   onSandboxRemoved: (agentId: string) => void = () => {};
   /** The agent's env file, if it has one (passed with --env-file / sourced). */
@@ -76,7 +86,14 @@ export class Sessions {
   /** Consecutive polls that saw a "working" agent's screen sitting idle. */
   private idleScreens = new Map<string, number>();
 
-  constructor(private hub: Hub, private agentToken: string) {}
+  constructor(private hub: Hub, private agentToken: string) {
+    this.sessionProof = new SessionProof(projectHome(hub.slug), this.backend.kind);
+  }
+
+  private requiresSandbox(): boolean { return this.hub.snap.config.project.githubAuth === "app"; }
+  private safeAgent(agent: { id: string; mode: string; workspacePath: string | null }): boolean {
+    return /^[a-z0-9][a-z0-9-]{0,79}$/.test(agent.id) && agent.mode === "sandbox" && !agent.workspacePath;
+  }
 
   private name(agentId: string) {
     return sessionName(this.hub.slug, agentId);
@@ -84,17 +101,26 @@ export class Sessions {
 
   // ------------------------------------------------------------ lifecycle
 
-  async start(id: string) {
+  start(id: string) { return this.serialize(id, () => this.startNow(id)); }
+
+  private async startNow(id: string) {
     const hub = this.hub;
     const agent = hub.cfg(id);
     const st = hub.status(id);
     if (!agent || !st || st.session.state === "running" || st.session.state === "starting") return;
-    const setup = hub.snap.setup;
     const fail = (detail: string) => {
       hub.setSession(id, { state: "failed", detail });
       hub.setStatus(id, { state: "idle", note: "Could not start" });
       hub.activity("session", id, `${agent.name} could not start: ${detail.split("\n")[0]}`);
     };
+    if (this.requiresSandbox() && !this.safeAgent(agent)) return fail("GitHub App projects require Sandbox mode and an HQ-managed workspace. Update this agent in Settings → Team.");
+    const codexCheck = agent.mode === "local" ? "codex" : "openai-secret";
+    if (agent.cli === "codex" && (agent.mode === "local" || !managedCredentialsEnabled()) && !hub.snap.setup.checks.some((c) => c.id === codexCheck)) {
+      hub.setSession(id, { state: "starting", detail: "Checking Codex setup…" });
+      try { await this.recheckSetup(); }
+      catch (error) { return fail(`Could not check Codex setup: ${error instanceof Error ? error.message : String(error)}`); }
+    }
+    const setup = hub.snap.setup;
     if (!setup.checks.find((c) => c.id === "tmux" && c.status === "ok")) return fail("tmux is not installed. See the setup checklist.");
     if (agent.mode === "sandbox" && !setup.sandboxReady) return fail("Docker Sandboxes isn't ready on this machine. Finish the setup checklist, or switch this agent to Local mode.");
     const check = (cid: string) => setup.checks.find((c) => c.id === cid)?.status;
@@ -104,13 +130,17 @@ export class Sessions {
       return fail("Codex needs an OpenAI key in sbx. Run `sbx secret set openai --oauth` (Setup checklist → Run in terminal).");
 
     const name = this.name(id);
-    this.onSessionDown(id);
+    hub.setSession(id, { state: "starting", detail: "Checking session…" });
     try {
+      const existing = await this.backend.exists(name);
+      if (this.requiresSandbox() && existing && !(await this.sessionProof.verify(id, name))) throw new Error("Existing session is unverified. Stop the existing session before starting this agent.");
+      this.onSessionDown(id);
       hub.setSession(id, { state: "starting", detail: "Preparing folder…", workspace: workspaceFor(agent, hub.slug) });
       if (agent.mode === "sandbox" && managedCredentialsEnabled()) {
         const keys = await this.prepareSandboxKeys(id);
         if (agent.cli === "codex" && !keys.includes("openai")) throw new Error("Add an OpenAI key in Settings → Sandbox before starting Codex.");
       }
+      await this.prepareAgentEnv(id);
       const dir = await ensureWorkspace(agent, hub.slug, hub.repo);
       const adapter = adapters[agent.cli];
       // App variables reach the agent in sandbox mode and in Local mode with tmux (not Local on Windows).
@@ -122,7 +152,7 @@ export class Sessions {
         const skills = await prepareSkills(hub.slug, dir, specs);
         if (skills.error) hub.activity("session", id, `${agent.name}: some agent skills didn't install (${skills.error.slice(0, 120)}). Starting anyway.`);
       }
-      if (!(await this.backend.exists(name))) {
+      if (!existing) {
         const launch = adapter.launch(agent);
         const envFile = this.envFileFor(id);
         // Local mode: the agent gets the env file's variables (tmux only: there's no shell to load them into otherwise).
@@ -130,19 +160,29 @@ export class Sessions {
         if (agent.mode === "local" && envFile && !this.backend.persistent)
           hub.activity("session", id, `${agent.name}'s env file isn't loaded in Local mode on Windows. Use Sandbox mode for app variables.`);
         if (agent.mode === "sandbox") {
-          hub.setSession(id, { detail: "Allowing the sandbox to reach HQ…" });
-          await this.ensurePolicy();
-          hub.setSession(id, { detail: "Starting sandbox…" });
-          // sbx only accepts a size when it creates the sandbox; an existing (stopped) one keeps its size,
-          // and passing --cpus/--memory again makes `sbx run` fail. "Recreate sandbox" applies a new size.
+          hub.setSession(id, { detail: "Preparing sandbox…" });
           const { cpus, memoryGb } = agent.sandbox.resources;
           const isNew = !(await this.sandboxExists(name));
           const size = !isNew ? [] : [...(cpus ? ["--cpus", String(cpus)] : []), ...(memoryGb ? ["--memory", `${Math.round(memoryGb * 1024)}m`] : [])];
           const env = [...(envFile ? ["--env-file", envFile] : []), "-e", `BROWSER=${SANDBOX_BROWSER}`];
+          if (this.requiresSandbox()) {
+            // Scoped policy needs an existing sandbox. Creating it first avoids
+            // granting every sandbox access to this project's coordinator.
+            if (isNew) {
+              const created = await run("sbx", ["create", "--name", name, ...size, ...env, launch.sbxAgent, dir], { timeoutMs: 180_000 });
+              if (!created.ok) throw new Error(`Could not create sandbox: ${created.stderr.trim().split("\n")[0] || "sbx failed"}`);
+            }
+            await this.ensureScopedPolicy(name);
+          } else await this.ensurePolicy();
+          hub.setSession(id, { detail: "Starting sandbox…" });
           const args = launch.args.length ? ["--", ...launch.args] : [];
-          spec = { file: "sbx", args: ["run", "--name", name, ...size, ...env, launch.sbxAgent, dir, ...args], envFile: null };
+          spec = { file: "sbx", args: ["run", "--name", name, ...(this.requiresSandbox() ? [] : size), ...env, launch.sbxAgent, dir, ...args], envFile: null };
         }
         await this.backend.create(name, dir, spec, { cols: 200, rows: 50 });
+        if (this.requiresSandbox()) {
+          try { await this.sessionProof.mark(id, name); }
+          catch (error) { await this.backend.kill(name); throw error; }
+        }
       }
       this.attach(id);
       hub.setSession(id, { state: "running", detail: null, workspace: dir });
@@ -157,7 +197,9 @@ export class Sessions {
     }
   }
 
-  async stop(id: string) {
+  stop(id: string) { return this.serialize(id, () => this.stopNow(id)); }
+
+  private async stopNow(id: string) {
     const hub = this.hub;
     const agent = hub.cfg(id);
     if (!agent) return;
@@ -166,8 +208,18 @@ export class Sessions {
     this.detach(id);
     this.closeShell(id);
     await this.backend.kill(name);
-    // Stop (not remove) the VM so it can resume later with its state.
-    if (agent.mode === "sandbox") void run("sbx", ["stop", name], { timeoutMs: 30_000 });
+    this.sessionProof.clear(id);
+    // Stop (not remove) the sandbox so it can resume later with its state.
+    if (agent.mode === "sandbox") {
+      const stopped = await run("sbx", ["stop", name], { timeoutMs: 30_000 });
+      if (!stopped.ok && !/not found|no such/i.test(stopped.stderr)) {
+        const detail = `Could not stop sandbox: ${(stopped.stderr || stopped.stdout || "sbx failed").trim().split("\n")[0]}`;
+        hub.setSession(id, { state: "failed", detail });
+        hub.setStatus(id, { state: "idle", currentTaskId: null, note: "Sandbox stop failed" });
+        hub.activity("session", id, `${agent.name}: ${detail}`);
+        return;
+      }
+    }
     hub.setSession(id, { state: "stopped", detail: null });
     hub.setStatus(id, { state: "idle", currentTaskId: null, note: "Stopped" });
     hub.activity("session", id, `${agent.name} stopped`);
@@ -200,7 +252,17 @@ export class Sessions {
   }
 
   /** Stops the agent and deletes what was asked. Only HQ-made folders inside HQ's home can be deleted. */
-  async removeResources(id: string, opts: { deleteSandbox: boolean; deleteFolder: boolean }): Promise<string[]> {
+  removeResources(id: string, opts: { deleteSandbox: boolean; deleteFolder: boolean }, onRemoved?: (removed: string[]) => void): Promise<string[]> {
+    return this.serialize(id, async () => {
+      if (!this.hub.cfg(id)) return [];
+      const removed = await this.removeResourcesNow(id, opts);
+      if (!removed) return [];
+      onRemoved?.(removed);
+      return removed;
+    });
+  }
+
+  private async removeResourcesNow(id: string, opts: { deleteSandbox: boolean; deleteFolder: boolean }): Promise<string[] | null> {
     const agent = this.hub.cfg(id);
     if (!agent) return [];
     const done: string[] = [];
@@ -209,11 +271,25 @@ export class Sessions {
     this.detach(id);
     this.closeShell(id);
     await this.backend.kill(name);
+    this.sessionProof.clear(id);
     if (opts.deleteSandbox) {
       const rm = await run("sbx", ["rm", "-f", name], { timeoutMs: 60_000 });
       if (rm.ok) (done.push("sandbox"), this.onSandboxRemoved(id));
-      else if (!/not found|no such/i.test(rm.stderr)) log.warn(`sbx rm ${name}: ${rm.stderr.trim()}`);
-    } else if (agent.mode === "sandbox") void run("sbx", ["stop", name], { timeoutMs: 30_000 });
+      else if (!/not found|no such/i.test(rm.stderr)) {
+        const detail = `Could not remove sandbox: ${(rm.stderr || rm.stdout || "sbx failed").trim().split("\n")[0]}`;
+        this.hub.setSession(id, { state: "failed", detail });
+        this.hub.activity("session", id, `${agent.name}: ${detail}. Agent and workspace were kept.`);
+        return null;
+      }
+    } else if (agent.mode === "sandbox") {
+      const stopped = await run("sbx", ["stop", name], { timeoutMs: 30_000 });
+      if (!stopped.ok && !/not found|no such/i.test(stopped.stderr)) {
+        const detail = `Could not stop sandbox: ${(stopped.stderr || stopped.stdout || "sbx failed").trim().split("\n")[0]}`;
+        this.hub.setSession(id, { state: "failed", detail });
+        this.hub.activity("session", id, `${agent.name}: ${detail}. Agent and workspace were kept.`);
+        return null;
+      }
+    }
     if (opts.deleteFolder && !agent.workspacePath) {
       const home = resolve(projectHome(this.hub.slug));
       const dir = resolve(workspaceFor(agent, this.hub.slug));
@@ -250,11 +326,16 @@ export class Sessions {
   }
 
   /** Removes the agent's sandbox and starts a fresh one (applies new CPU/memory). The folder is kept. */
-  async recreate(id: string) {
+  recreate(id: string) { return this.serialize(id, () => this.recreateNow(id)); }
+
+  private async recreateNow(id: string) {
     const agent = this.hub.cfg(id);
     if (!agent || agent.mode !== "sandbox") return;
     const name = this.name(id);
-    if (this.hub.status(id)?.session.state === "running") await this.stop(id);
+    if (this.hub.status(id)?.session.state === "running") {
+      await this.stopNow(id);
+      if (this.hub.status(id)?.session.state === "failed") return;
+    }
     this.hub.setSession(id, { state: "starting", detail: "Removing the old sandbox…", sandbox: null });
     const rm = await run("sbx", ["rm", "-f", name], { timeoutMs: 60_000 });
     if (!rm.ok && !/not found|no such/i.test(rm.stderr)) {
@@ -264,7 +345,7 @@ export class Sessions {
     this.onSandboxRemoved(id);
     this.hub.setSession(id, { state: "stopped", detail: null });
     this.hub.activity("session", id, `Recreating ${agent.name}'s sandbox with new resources`);
-    await this.start(id);
+    await this.startNow(id);
   }
 
   /** Reads each HQ sandbox's real CPU/memory from `sbx ls --json`. */
@@ -289,6 +370,22 @@ export class Sessions {
           : { cpus: m.cpus, memoryGb: Math.min(32, Math.max(0.5, m.memoryGb / 2)) };
       const cur = this.hub.status(agent.id)?.session.sandbox;
       if (JSON.stringify(cur ?? null) !== JSON.stringify(size)) this.hub.setSession(agent.id, { sandbox: size });
+    }
+  }
+
+  /** Grants this project's coordinator access only to the named sandbox. */
+  private async ensureScopedPolicy(sandbox: string): Promise<void> {
+    const listed = await run("sbx", ["policy", "ls", "--json", "--type", "network"], { timeoutMs: 15_000 });
+    const data = listed.ok ? parseCliJson<{ rules?: { applies_to: string; decision: string; resources: string[]; status?: string }[] }>(listed.stdout) : null;
+    if (!data || !Array.isArray(data.rules)) throw new Error("Could not inspect sandbox network policy");
+    const port = this.hub.snap.config.project.hqPort;
+    for (const target of [`localhost:${port}`, `host.docker.internal:${port}`]) {
+      const present = data.rules.some((rule) => rule.applies_to === `sandbox:${sandbox}` && rule.decision === "allow" && rule.status !== "inactive" && Array.isArray(rule.resources) && rule.resources.includes(target));
+      if (!present) {
+        const added = await run("sbx", ["policy", "allow", "network", "--sandbox", sandbox, target], { timeoutMs: 15_000 });
+        if (!added.ok) throw new Error(`Could not allow ${target} for this sandbox`);
+      }
+      if ((await policyVerdict(target, sandbox)).verdict !== "allowed") throw new Error(`Sandbox network policy blocks ${target}`);
     }
   }
 
@@ -336,12 +433,16 @@ export class Sessions {
 
   /** Types a line into an agent's prompt and submits it. */
   async typeInto(agentId: string, text: string): Promise<boolean> {
+    const agent = this.hub.cfg(agentId);
+    if (this.requiresSandbox() && (!agent || !this.safeAgent(agent) || !(await this.sessionProof.verify(agentId, this.name(agentId))))) return false;
     if (!(await this.backend.type(this.name(agentId), text))) return false;
     await new Promise((r) => setTimeout(r, 200));
     return this.backend.enter(this.name(agentId));
   }
 
   async pressEnter(agentId: string): Promise<boolean> {
+    const agent = this.hub.cfg(agentId);
+    if (this.requiresSandbox() && (!agent || !this.safeAgent(agent) || !(await this.sessionProof.verify(agentId, this.name(agentId))))) return false;
     return this.backend.enter(this.name(agentId));
   }
 
@@ -396,6 +497,13 @@ export class Sessions {
         const name = this.name(agent.id);
         const alive = await this.backend.exists(name);
         if (alive) {
+          if (this.requiresSandbox() && (!this.safeAgent(agent) || !(await this.sessionProof.verify(agent.id, name)))) {
+            this.detach(agent.id);
+            this.closeShell(agent.id);
+            const detail = "Existing session is unverified. Stop the existing session before starting this agent.";
+            if (st.session.state !== "failed" || st.session.detail !== detail) this.hub.setSession(agent.id, { state: "failed", detail });
+            continue;
+          }
           const pane = await this.backend.exitInfo(name);
           if (pane?.dead) {
             const detail = (await this.backend.screenText(name, 6)) || `Exited with code ${pane.exitStatus}`;
@@ -557,6 +665,7 @@ export class Sessions {
     const agent = this.hub.cfg(agentId);
     const st = this.hub.status(agentId);
     if (!agent || this.shells.has(id)) return;
+    if (this.requiresSandbox() && (!this.safeAgent(agent) || !(await this.sessionProof.verify(agentId, this.name(agentId))))) return this.hub.terminal(id, "\x1b[31mA verified sandbox session is required.\x1b[0m\r\n");
     if (st?.session.state !== "running") return this.hub.terminal(id, "\x1b[2mStart the agent first; the shell opens inside its sandbox.\x1b[0m\r\n");
     // Bumped by closeShell, so an open still starting when you press "New shell" is dropped.
     const gen = (this.shellGen.get(id) ?? 0) + 1;
@@ -566,6 +675,7 @@ export class Sessions {
     let pty: IPty;
     let banner: string;
     try {
+      await this.prepareAgentEnv(agentId);
       let file: string;
       let args: string[];
       if (agent.mode === "sandbox") {

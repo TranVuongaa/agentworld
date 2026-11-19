@@ -14,6 +14,7 @@ export function McpSettings() {
   const mcp = useOffice((s) => s.snap?.mcp);
   const team = useOffice((s) => s.snap?.config.team) ?? [];
   const stack = useOffice((s) => s.snap?.config.stack);
+  const appMode = useOffice((s) => s.snap?.config.project.githubAuth === "app");
   const [signingIn, setSigningIn] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", url: "", apiKey: "", command: "", args: "", local: false });
@@ -219,13 +220,14 @@ export function McpSettings() {
           )}
         </div>
         {tip && <p className="mt-2 text-[13px] text-muted">{tip}</p>}
+        {appMode && <p className="mt-2 text-[12px] text-muted">Use a remote MCP URL; host command servers are not available in GitHub App mode.</p>}
         <div className="mt-3 flex items-center gap-3">
           <button className="btn" disabled={!canAdd} onClick={add}>
             Add server
           </button>
-          <button className="text-[12px] underline" onClick={() => setForm({ ...form, local: !form.local })}>
+          {!appMode && <button className="text-[12px] underline" onClick={() => setForm({ ...form, local: !form.local })}>
             {form.local ? "Use a URL instead" : "Local server (command)…"}
-          </button>
+          </button>}
         </div>
       </section>
     </div>

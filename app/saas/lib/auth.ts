@@ -1,16 +1,12 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { db } from "./db";
+import { appUrl } from "./appUrl";
+export { appUrl } from "./appUrl";
 import { decryptSecret, encryptSecret, readEncryptionKey } from "../../../server/saas/crypto";
 
 const sessionCookie = "agentworld_session";
 export const cookieOptions = () => ({ httpOnly: true, secure: appUrl().protocol === "https:", sameSite: "lax" as const, path: "/" });
-export function appUrl(): URL {
-  const url = new URL(process.env.SAAS_APP_URL || "http://127.0.0.1:7420");
-  if (!(["http:", "https:"].includes(url.protocol)) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("Invalid SAAS_APP_URL");
-  if (url.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) throw new Error("SAAS_APP_URL must use HTTPS outside localhost");
-  return url;
-}
 export function randomToken(): string { return randomBytes(32).toString("base64url"); }
 function hashToken(token: string): string { return createHash("sha256").update(token).digest("hex"); }
 export function assertOrigin(request: Request): void {

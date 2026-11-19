@@ -52,7 +52,15 @@
     "test:managed-credentials": "node scripts/run-test.mjs scripts/managed-credentials-test.ts",
     "test:github-app": "node scripts/run-test.mjs scripts/github-app-token-test.ts",
     "test:mcp-project": "node scripts/run-test.mjs scripts/mcp-project-test.ts",
-    "test:project-gateway": "node scripts/run-test.mjs scripts/project-gateway-test.ts"
+    "test:project-gateway": "node scripts/run-test.mjs scripts/project-gateway-test.ts",
+    "test:managed-env": "node scripts/run-test.mjs scripts/managed-env-test.ts",
+    "test:github-auth-mode": "node scripts/run-test.mjs scripts/github-auth-mode-test.ts",
+    "test:recovery": "node scripts/run-test.mjs scripts/recovery-test.ts",
+    "test:sandbox-credential-isolation": "node scripts/run-test.mjs scripts/sandbox-credential-isolation-test.ts",
+    "test:project-terminal": "node scripts/run-test.mjs scripts/project-terminal-test.ts",
+    "test:session-proof": "node scripts/run-test.mjs scripts/session-proof-test.ts",
+    "test:app-sandbox-session": "node scripts/run-test.mjs scripts/app-sandbox-session-test.ts",
+    "test:app-session-lifecycle": "node scripts/run-test.mjs scripts/app-session-lifecycle-test.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

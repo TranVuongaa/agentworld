@@ -45,6 +45,7 @@ export function TeamSettings() {
 }
 
 function AgentRow({ agent, expanded, onToggle, onRemove }: { agent: AgentConfig; expanded: boolean; onToggle: () => void; onRemove: () => void }) {
+  const appMode = useOffice((s) => s.snap?.config.project.githubAuth === "app");
   const set = (patch: Parameters<typeof officeActions.updateAgent>[1]) => officeActions.updateAgent(agent.id, patch);
   return (
     <div className="border-[3px] border-ink bg-white">
@@ -66,7 +67,7 @@ function AgentRow({ agent, expanded, onToggle, onRemove }: { agent: AgentConfig;
         <Field label="Runs in">
           <select className="field" value={agent.mode} onChange={(e) => set({ mode: e.target.value as AgentMode })}>
             <option value="sandbox">Sandbox</option>
-            <option value="local">Local</option>
+            {(!appMode || agent.mode === "local") && <option value="local">Local</option>}
           </select>
         </Field>
         <div className="flex gap-1.5">
@@ -85,7 +86,7 @@ function AgentRow({ agent, expanded, onToggle, onRemove }: { agent: AgentConfig;
       </div>
       {agent.mode === "local" && (
         <div className="border-t-2 border-dashed border-cream-3 px-3 py-1 text-[12px] text-muted">
-          Local mode runs plain <code>{agent.cli}</code> in the agent's own folder. Permission prompts stay on.
+          {appMode ? "Switch this agent to Sandbox before starting it in a GitHub App project." : <>Local mode runs plain <code>{agent.cli}</code> in the agent's own folder. Permission prompts stay on.</>}
         </div>
       )}
       {expanded && (
@@ -119,16 +120,16 @@ function AgentRow({ agent, expanded, onToggle, onRemove }: { agent: AgentConfig;
               onCommit={(v) => set({ skills: v.split(",").map((s) => s.trim()).filter(Boolean) })}
             />
           </Field>
-          <div className="col-span-2">
-            <Field label="Folder" hint="Leave empty and HQ keeps its own clone of the repo for this agent. Or enter an existing git folder.">
+          {(!appMode || agent.workspacePath) && <div className="col-span-2">
+            <Field label="Folder" hint={appMode ? "GitHub App projects require an HQ-managed clone. Clear this folder to continue." : "Leave empty and HQ keeps its own clone of the repo for this agent. Or enter an existing git folder."}>
               <CommitInput
                 className="field font-term text-[17px]"
                 value={agent.workspacePath ?? ""}
                 placeholder={`HQ-managed: ~/.jsmhq/…/${agent.id}`}
-                onCommit={(v) => set({ workspacePath: v.trim() || null })}
+                onCommit={(v) => set({ workspacePath: appMode ? null : v.trim() || null })}
               />
             </Field>
-          </div>
+          </div>}
           <div className="col-span-2">
             <Field label="ROLE.md" hint="Who this agent is. HQ adds the team, rules and tools, writes it to .jsmhq-role.md in the agent's folder (never committed) and loads it when the session starts. A ROLE.md the folder already has is included too, never overwritten.">
               <CommitInput multiline className="field h-[120px] resize-y font-term text-[17px] leading-tight" value={agent.roleMd} onCommit={(v) => set({ roleMd: v })} />
@@ -146,6 +147,7 @@ function AddAgent() {
   const [cli, setCli] = useState<AgentCli>("claude");
   const [mode, setMode] = useState<AgentMode>("sandbox");
   const team = useOffice((s) => s.snap?.config.team) ?? [];
+  const appMode = useOffice((s) => s.snap?.config.project.githubAuth === "app");
   const suggested = nextAgentName(team.map((a) => a.name));
   const add = () => {
     officeActions.addAgent({ name: name.trim() || suggested, role, cli, mode });
@@ -173,7 +175,7 @@ function AddAgent() {
         <Field label="Runs in">
           <select className="field" value={mode} onChange={(e) => setMode(e.target.value as AgentMode)}>
             <option value="sandbox">Sandbox</option>
-            <option value="local">Local</option>
+            {!appMode && <option value="local">Local</option>}
           </select>
         </Field>
         <button className="btn" type="submit">

@@ -110,6 +110,8 @@ export interface OfficeDataSource {
   setProxy(url: string | null): void;
   /** Creates the agent's env file if needed and opens it in the default editor. */
   openEnvFile(agentId: string): void;
+  setAgentEnv(agentId: string, name: string, value: string): void;
+  removeAgentEnv(agentId: string, name: string): void;
   /** Closes an action item; HQ tells the agent (done: with your note; dismissed: continue without it). */
   resolveActionItem(id: string, decision: "done" | "dismissed", note?: string): void;
 

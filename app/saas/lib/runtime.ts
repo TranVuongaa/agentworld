@@ -7,18 +7,22 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { appUrl } from "./auth";
 import { projectGithubToken } from "./projectGithub";
-import { localDevEnabled } from "./local";
+import { localDevEnabled, localGithubCliEnabled } from "./local";
 import { db } from "./db";
 import { Secrets } from "../../../server/saas/secrets";
 import { readEncryptionKey } from "../../../server/saas/crypto";
 import { parseProjectKeyName, projectKeyName, validAgent, validService } from "../../../server/saas/keyNames";
 import { resolveStoredProjectKeys } from "../../../server/saas/projectKeys";
+import { envSecretName, parseEnvSecretName, validEnvName } from "../../../server/saas/envNames";
+import { projectProcessEnvironment } from "../../../server/saas/processEnvironment";
+import { Recovery } from "../../../server/saas/recovery";
 
 interface Runtime { child: ChildProcess; port: number; token: string }
-interface RuntimeRegistry { running: Map<string, Runtime>; starting: Map<string, Promise<Runtime>>; children: Set<ChildProcess> }
+interface RuntimeRegistry { running: Map<string, Runtime>; starting: Map<string, Promise<Runtime>>; children: Set<ChildProcess>; recovery: Recovery }
 declare global { var agentworldRuntimeRegistry: RuntimeRegistry | undefined }
-const registry = globalThis.agentworldRuntimeRegistry ??= { running: new Map(), starting: new Map(), children: new Set() };
+const registry = globalThis.agentworldRuntimeRegistry ??= { running: new Map(), starting: new Map(), children: new Set(), recovery: new Recovery() };
 registry.children ??= new Set();
+registry.recovery ??= new Recovery();
 declare global { var agentworldRuntimeCleanupRegistered: boolean | undefined }
 if (!globalThis.agentworldRuntimeCleanupRegistered) {
   globalThis.agentworldRuntimeCleanupRegistered = true;
@@ -102,12 +106,9 @@ async function start(ownerId: string, projectId: string, repo: string, githubTok
   await writeFile(stateFile, JSON.stringify({ config, plan }), { mode: 0o600 });
   const token = randomBytes(24).toString("hex");
   const runtimeId = randomBytes(24).toString("hex");
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("SAAS_") || key.startsWith("GITHUB_") || ["DATABASE_URL", "GH_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"].includes(key)) delete env[key];
-  }
+  const env = projectProcessEnvironment(process.env);
   const child = spawn(process.execPath, [join(process.cwd(), "dist-server/main.mjs"), "--repo", root, "--port", String(port), "--no-open", "--headless"], {
-    cwd: process.cwd(), stdio: ["ignore", "ignore", "ignore", "ipc"], env: { ...env, HQ_STATE_FILE: stateFile, HQ_MANAGED_GITHUB: "1", HQ_PROJECT_ID: `p${projectId.replaceAll("-", "")}`, HQ_UI_TOKEN: token, HQ_RUNTIME_ID: runtimeId, HQ_UI_ORIGIN: appUrl().origin, HQ_SUPERVISED: "1" },
+    cwd: process.cwd(), stdio: ["ignore", "ignore", "ignore", "ipc"], env: { ...env, HQ_STATE_FILE: stateFile, HQ_MANAGED_GITHUB: "1", HQ_GITHUB_APP: localGithubCliEnabled() ? "0" : "1", HQ_PROJECT_ID: `p${projectId.replaceAll("-", "")}`, HQ_UI_TOKEN: token, HQ_RUNTIME_ID: runtimeId, HQ_UI_ORIGIN: appUrl().origin, HQ_SUPERVISED: "1" },
   });
   registry.children.add(child);
   let failed: Error | null = null;
@@ -125,9 +126,36 @@ async function start(ownerId: string, projectId: string, repo: string, githubTok
         if (request.operation === "github") return projectGithubToken(ownerId, projectId);
         const secrets = new Secrets(db(), readEncryptionKey(process.env.SAAS_ENCRYPTION_KEY));
         if (request.operation === "list") return (await secrets.list(ownerId, projectId)).map(parseProjectKeyName).filter(Boolean);
+        if (request.operation === "env-list-all") {
+          const result: Record<string, string[]> = Object.create(null);
+          for (const item of (await secrets.list(ownerId, projectId)).map(parseEnvSecretName)) {
+            if (item) (result[item.agentId] ??= []).push(item.name);
+          }
+          for (const names of Object.values(result)) names.sort();
+          return result;
+        }
+        if (["env-list", "env-resolve", "env-set", "env-remove"].includes(String(request.operation)) && validAgent(payload.agentId) && payload.agentId !== null) {
+          const agentId = payload.agentId;
+          if (request.operation === "env-list" || request.operation === "env-resolve") {
+            const names = (await secrets.list(ownerId, projectId)).map(parseEnvSecretName).filter((item): item is { agentId: string; name: string } => !!item && item.agentId === agentId);
+            if (request.operation === "env-list") return names.map((item) => item.name).sort();
+            const values: Record<string, string> = Object.create(null);
+            for (const item of names) {
+              const value = await secrets.get(ownerId, projectId, envSecretName(agentId, item.name));
+              if (value !== null) values[item.name] = value;
+            }
+            return values;
+          }
+          if (!validEnvName(payload.name)) throw new Error("Invalid environment name");
+          const name = envSecretName(agentId, payload.name);
+          if (request.operation === "env-remove") return secrets.remove(ownerId, projectId, name);
+          if (typeof payload.value !== "string" || payload.value.length > 8192 || /[\r\n\0]/.test(payload.value)) throw new Error("Invalid environment value");
+          if (!await secrets.set(ownerId, projectId, name, payload.value)) throw new Error("Project not found");
+          return true;
+        }
         if (request.operation === "resolve" && validAgent(payload.agentId) && payload.agentId !== null) {
           const resolved = await resolveStoredProjectKeys(secrets, ownerId, projectId, payload.agentId);
-          if (!localDevEnabled() || !resolved.github) resolved.github = await projectGithubToken(ownerId, projectId);
+          if (!localGithubCliEnabled() || !resolved.github) resolved.github = await projectGithubToken(ownerId, projectId);
           return resolved;
         }
         if ((request.operation === "set" || request.operation === "remove") && validAgent(payload.agentId) && validService(payload.service)) {
@@ -150,7 +178,19 @@ async function start(ownerId: string, projectId: string, repo: string, githubTok
   });
   child.on("error", (error) => { failed = error; });
   const runtime = { child, port, token };
-  child.once("exit", () => { registry.children.delete(child); if (registry.running.get(projectId) === runtime) registry.running.delete(projectId); });
+  child.once("exit", () => {
+    registry.children.delete(child);
+    if (registry.running.get(projectId) !== runtime) return;
+    registry.running.delete(projectId);
+    registry.recovery.schedule(projectId, async () => {
+      const result = await db().query<{ repository_full_name: string }>("SELECT repository_full_name FROM saas_projects WHERE id = $1 AND owner_id = $2 AND local_autostart = true", [projectId, ownerId]);
+      if (!result.rows[0] || !localDevEnabled()) return false;
+      const projectDir = resolve(process.env.SAAS_DATA_DIR || join(homedir(), ".agentworld-saas"), "projects", projectId);
+      if (!existsSync(join(projectDir, ".git"))) return false;
+      await openLocalProject(ownerId, projectId, result.rows[0].repository_full_name, "");
+      return true;
+    });
+  });
   try {
     for (let i = 0; i < 100; i++) {
       if (failed) throw failed;
@@ -173,7 +213,12 @@ export async function openLocalProject(ownerId: string, projectId: string, repo:
   if (running && running.child.exitCode === null && running.child.signalCode === null) return running;
   let pending = registry.starting.get(projectId);
   if (!pending) {
-    pending = start(ownerId, projectId, repo, githubToken).then((runtime) => { registry.running.set(projectId, runtime); return runtime; });
+    pending = start(ownerId, projectId, repo, githubToken).then((runtime) => {
+      if (runtime.child.exitCode !== null || runtime.child.signalCode !== null) throw new Error("Project server stopped during startup");
+      registry.running.set(projectId, runtime);
+      registry.recovery.started(projectId);
+      return runtime;
+    });
     registry.starting.set(projectId, pending);
   }
   try { return await pending; } finally { if (registry.starting.get(projectId) === pending) registry.starting.delete(projectId); }

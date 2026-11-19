@@ -13,6 +13,23 @@ let lastDir = "";
  * folder, or any folder you type.
  */
 export function TerminalDrawer() {
+  const appMode = useOffice((s) => s.snap?.config.project.githubAuth === "app");
+  return appMode ? <SandboxTerminalDrawer /> : <HostTerminalDrawer />;
+}
+
+function SandboxTerminalDrawer() {
+  const snap = useOffice((s) => s.snap);
+  const running = (snap?.config.team ?? []).filter((agent) => agent.mode === "sandbox" && snap?.agents.find((state) => state.agentId === agent.id)?.session.state === "running");
+  const [selected, setSelected] = useState("");
+  const agentId = running.some((agent) => agent.id === selected) ? selected : running[0]?.id;
+  useEffect(() => { if (agentId) officeActions.openShell(agentId); }, [agentId]);
+  return <>
+    <DrawerHeader><div><b className="text-[18px]">Terminal</b><div className="text-[13px] text-muted">Shell inside an agent sandbox.</div></div></DrawerHeader>
+    {agentId ? <><div className="flex items-center gap-2 border-b-[3px] border-ink bg-cream-2 px-3 py-1.5 text-[13px]"><label htmlFor="sandbox-term-agent">Agent</label><select id="sandbox-term-agent" className="field flex-1" value={agentId} onChange={(event) => setSelected(event.target.value)}>{running.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select><button className="btn px-2 text-[12px]" onClick={() => { officeActions.closeShell(agentId); officeActions.openShell(agentId); }}>New shell</button></div><div className="min-h-0 flex-1 overflow-hidden"><TerminalView key={agentId} agentId={`shell:${agentId}`} /></div></> : <p className="p-4 text-[14px]">Start a sandboxed agent to open its terminal.</p>}
+  </>;
+}
+
+function HostTerminalDrawer() {
   const snap = useOffice((s) => s.snap);
   const [dir, setDir] = useState(lastDir);
   const [other, setOther] = useState("");

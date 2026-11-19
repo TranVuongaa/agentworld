@@ -29,3 +29,8 @@ export const projectKeyNames = () => managedRequest<ProjectKeyName[]>("list");
 export const resolveProjectKeys = (agentId: string) => managedRequest<Record<string, string>>("resolve", { agentId });
 export const setProjectKey = (agentId: string | null, service: string, value: string) => managedRequest<void>("set", { agentId, service, value });
 export const removeProjectKey = (agentId: string | null, service: string) => managedRequest<void>("remove", { agentId, service });
+
+export const listAllManagedEnv = () => managedRequest<Record<string, string[]>>("env-list-all");
+export const resolveManagedEnv = (agentId: string) => managedRequest<Record<string, string>>("env-resolve", { agentId });
+export const setManagedEnv = (agentId: string, name: string, value: string) => managedRequest<void>("env-set", { agentId, name, value });
+export const removeManagedEnv = (agentId: string, name: string) => managedRequest<void>("env-remove", { agentId, name });

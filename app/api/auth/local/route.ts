@@ -2,10 +2,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { assertOrigin, loginGithub } from "../../../saas/lib/auth";
 import { github } from "../../../saas/lib/github";
-import { localDevEnabled } from "../../../saas/lib/local";
+import { localGithubCliEnabled } from "../../../saas/lib/local";
 
 export async function POST(request: Request) {
-  if (!localDevEnabled()) return new Response("Not found", { status: 404 });
+  if (!localGithubCliEnabled()) return new Response("Not found", { status: 404 });
   try { assertOrigin(request); } catch { return new Response("Forbidden", { status: 403 }); }
   try {
     const { stdout } = await promisify(execFile)("gh", ["auth", "token", "--hostname", "github.com"], { timeout: 10000, maxBuffer: 16384 });

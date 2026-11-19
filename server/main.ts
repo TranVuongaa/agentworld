@@ -4,7 +4,7 @@
 //
 // --dev enables the Next.js development server.
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +47,8 @@ async function main() {
   const { config, isNew } = loadConfig(repo, port, stored.config);
   config.project.hqPort = port;
   config.project.managed = process.env.HQ_MANAGED_GITHUB === "1";
+  if (config.project.managed) config.project.githubAuth = process.env.HQ_GITHUB_APP === "1" ? "app" : "gh";
+  else delete config.project.githubAuth;
   if (process.env.HQ_PROJECT_ID) {
     if (!/^p[a-f0-9]{32}$/.test(process.env.HQ_PROJECT_ID)) throw new Error("Invalid managed project ID");
     config.project.id = process.env.HQ_PROJECT_ID;
@@ -75,7 +77,8 @@ async function main() {
   sessions.lastHookAt = (id) => inbox.lastHookAt(id);
   const sbx = new Sbx(hub);
   sessions.prepareSandboxKeys = (id) => sbx.prepareManagedKeys(id);
-  sessions.envFileFor = (id) => (existsSync(sbx.envFile(id)) ? sbx.envFile(id) : null);
+  sessions.prepareAgentEnv = (id) => sbx.prepareManagedEnv(id);
+  sessions.envFileFor = (id) => sbx.effectiveEnvFile(id);
   const mcp = new SbxMcp(hub, (id, file, args, onExit) => sessions.runTerminal(id, file, args, onExit));
   sessions.onSandboxReady = (id) => {
     void sbx.syncRules(id);
@@ -142,6 +145,7 @@ async function main() {
     sessions.shutdown();
     clearInterval(credentialRefresh);
     sbx.stopApprovalPolling();
+    sbx.cleanupManagedEnv();
     github.stop();
     process.exit(0);
   };

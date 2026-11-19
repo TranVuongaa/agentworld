@@ -1,4 +1,4 @@
-import { localDevEnabled } from "./local";
+import { localGithubCliEnabled } from "./local";
 
 export async function github<T>(token: string, path: string): Promise<T> {
   const response = await fetch(`https://api.github.com${path}`, { headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "agentworld" }, cache: "no-store" });
@@ -9,7 +9,7 @@ export interface Installation { id: number; account: { login: string } }
 export interface Repository { id: number; full_name: string; name: string; private: boolean }
 export async function repositories(token: string): Promise<Array<Repository & { installationId: number; accountLogin: string }>> {
   const all: Array<Repository & { installationId: number; accountLogin: string }> = [];
-  if (localDevEnabled()) {
+  if (localGithubCliEnabled()) {
     for (let page = 1; ; page++) {
       const result = await github<Array<Repository & { owner: { login: string } }>>(token, `/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member&page=${page}`);
       all.push(...result.map((repo) => ({ ...repo, installationId: 0, accountLogin: repo.owner.login })));

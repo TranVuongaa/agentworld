@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseProjectKeyName, projectKeyName } from "../server/saas/keyNames";
 import { run } from "../server/lib/exec";
+import { uncoveredGlobalCredentials } from "../server/saas/sandboxCredentials";
+import { projectProcessEnvironment } from "../server/saas/processEnvironment";
 import { projectKeyNames, resolveProjectKeys } from "../server/lib/managedCredentials";
 
 if (process.argv.includes("--worker")) {
@@ -17,6 +19,17 @@ if (process.argv.includes("--worker")) {
   assert.deepEqual(await resolveProjectKeys("worker-1"), { openai: "fake-api-key" });
   console.log("Scoped credential IPC and subprocess environment checks passed");
 } else {
+  const isolated = projectProcessEnvironment({ PATH: "/bin", HOME: "/tmp/home", LANG: "en_US.UTF-8", DOCKER_HOST: "unix:///tmp/docker.sock", DATABASE_URL: "secret-db", AWS_SECRET_ACCESS_KEY: "secret-aws", GH_TOKEN: "secret-gh", OPENAI_API_KEY: "secret-ai", CUSTOM_SECRET: "secret-custom" });
+  assert.equal(isolated.PATH, "/bin");
+  assert.equal(isolated.DOCKER_HOST, "unix:///tmp/docker.sock");
+  assert.equal(isolated.DATABASE_URL, undefined);
+  assert.equal(isolated.AWS_SECRET_ACCESS_KEY, undefined);
+  assert.equal(isolated.GH_TOKEN, undefined);
+  assert.equal(isolated.OPENAI_API_KEY, undefined);
+  assert.equal(isolated.CUSTOM_SECRET, undefined);
+  const machineKeys = [{ name: "openai", scope: "global", type: "service" }, { name: "github", scope: "global", type: "service" }, { name: "other", scope: "sandbox:another", type: "service" }];
+  assert.deepEqual(uncoveredGlobalCredentials(machineKeys, { github: "scoped" }), ["openai"]);
+  assert.deepEqual(uncoveredGlobalCredentials(machineKeys, { github: "scoped", openai: "scoped" }), []);
   assert.equal(projectKeyName("openai", null), "SERVICE_OPENAI");
   const name = projectKeyName("openai", "worker-1");
   assert.deepEqual(parseProjectKeyName(name), { service: "openai", agentId: "worker-1" });

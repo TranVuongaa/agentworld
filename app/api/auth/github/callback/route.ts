@@ -19,7 +19,7 @@ export async function GET(request: Request) {
   if (!process.env.GITHUB_CLIENT_ID || !process.env.GITHUB_CLIENT_SECRET) return new Response("GitHub App credentials are not configured", { status: 503 });
   try {
     const response = await fetch("https://github.com/login/oauth/access_token", { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ client_id: process.env.GITHUB_CLIENT_ID, client_secret: process.env.GITHUB_CLIENT_SECRET, code, code_verifier: verifier, redirect_uri: new URL("/api/auth/github/callback", appUrl()).toString() }) });
-    const data = await response.json() as { access_token?: string };
+    const data = await response.json() as { access_token?: string; refresh_token?: string; expires_in?: number };
     if (!response.ok || !data.access_token) throw new Error("GitHub token exchange failed");
     const user = await github<{ id: number; login: string }>(data.access_token, "/user");
     await loginGithub(String(user.id), user.login, { ...data, access_token: data.access_token });

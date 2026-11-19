@@ -5,7 +5,9 @@ import pg from "pg";
 import { Projects } from "../server/saas/projects";
 import { Secrets } from "../server/saas/secrets";
 import { authorizedProjectSession } from "../server/saas/sessionAuth";
+import { envSecretName, parseEnvSecretName } from "../server/saas/envNames";
 import { projectKeyName } from "../server/saas/keyNames";
+import { selectAccessibleRepository } from "../server/saas/repositoryAccess";
 import { resolveStoredProjectKeys } from "../server/saas/projectKeys";
 
 nextEnv.loadEnvConfig(process.cwd());
@@ -26,6 +28,12 @@ try {
   assert.equal(await authorizedProjectSession(db, undefined, project.id), false);
   assert.equal(await authorizedProjectSession(db, `agentworld_session=${token}; agentworld_session=${token}`, project.id), false);
   assert.equal(await authorizedProjectSession(db, `agentworld_session=${token}`, randomUUID()), false);
+  const candidate = { id: 123, installationId: 4 };
+  assert.equal(selectAccessibleRepository([candidate], "123", "0"), candidate);
+  assert.equal(selectAccessibleRepository([candidate, { id: 123, installationId: 5 }], "123", "0"), null);
+  assert.equal(await projects.rebindRepository(stranger, project.id, { installationId: "3", accountLogin: "wrong", repositoryFullName: "wrong/repo" }), false);
+  assert.equal(await projects.rebindRepository(owner, project.id, { installationId: "3", accountLogin: "new-owner", repositoryFullName: "new-owner/test" }), true);
+  assert.equal((await projects.get(owner, project.id))?.installation_id, "3");
   assert.equal((await projects.list(owner)).length, 1);
   assert.deepEqual(await projects.list(stranger), []);
   assert.equal(await projects.get(stranger, project.id), null);
@@ -46,6 +54,13 @@ try {
   assert.deepEqual(await resolveStoredProjectKeys(secrets, owner, project.id, "worker-1"), { openai: "agent-key" });
   assert.deepEqual(await resolveStoredProjectKeys(secrets, owner, project.id, "worker-2"), { openai: "project-key" });
   assert.deepEqual(await resolveStoredProjectKeys(secrets, stranger, project.id, "worker-1"), {});
+  const envName = envSecretName("worker-1", "DATABASE_URL");
+  assert.deepEqual(parseEnvSecretName(envName), { agentId: "worker-1", name: "DATABASE_URL" });
+  assert.equal(parseEnvSecretName("ENV_FF_4142"), null);
+  assert.throws(() => envSecretName("worker-1", "INVALID NAME"));
+  assert.equal(await secrets.set(owner, project.id, envName, "postgres://fixture"), true);
+  assert.equal(await secrets.get(stranger, project.id, envName), null);
+  assert.equal(await secrets.get(owner, project.id, envName), "postgres://fixture");
   assert.equal(await secrets.remove(stranger, project.id, "OPENAI_API_KEY"), false);
   assert.equal(await projects.remove(stranger, project.id), false);
   assert.equal(await projects.remove(owner, project.id), true);

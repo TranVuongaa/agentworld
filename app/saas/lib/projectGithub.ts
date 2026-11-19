@@ -3,7 +3,7 @@ import { githubInstallationToken } from "../../../server/saas/githubApp";
 import { githubToken } from "./auth";
 import { db } from "./db";
 import { repositories } from "./github";
-import { localDevEnabled } from "./local";
+import { localGithubCliEnabled } from "./local";
 
 interface Token { token: string; expiresAt: number }
 declare global { var agentworldInstallationTokens: Map<string, Promise<Token>> | undefined }
@@ -15,10 +15,10 @@ export async function projectGithubToken(ownerId: string, projectId: string): Pr
   const project = result.rows[0];
   if (!project) throw new Error("Project not found");
   const userToken = await githubToken(ownerId);
-  if (localDevEnabled()) return userToken;
+  if (localGithubCliEnabled()) return userToken;
   const visible = await repositories(userToken);
   if (!visible.some((repo) => String(repo.id) === project.github_repository_id && String(repo.installationId) === project.installation_id)) throw new Error("GitHub repository access was revoked");
-  const key = `${ownerId}:${projectId}`;
+  const key = `${ownerId}:${projectId}:${project.installation_id}:${project.github_repository_id}`;
   const existing = cache.get(key);
   if (existing) {
     try { const token = await existing; if (token.expiresAt > Date.now() + 2 * 60_000) return token.token; }

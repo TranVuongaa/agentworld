@@ -37,6 +37,14 @@ try {
   const manager = new SbxMcp(hub, () => {});
   await manager.refresh();
   assert.deepEqual(manager.state.servers.map((s) => s.name).sort(), ["docs", "legacy"]);
+  hub.snap.config.project.githubAuth = "app";
+  await manager.refresh();
+  assert.deepEqual(manager.state.servers.map((s) => s.name), ["docs"], "GitHub App projects must not see the machine's legacy MCP registrations");
+  const beforeHostCommand = readFileSync(ops, "utf8");
+  await manager.add({ name: "host-command", command: "fixture" });
+  assert.equal(readFileSync(ops, "utf8"), beforeHostCommand, "App projects must not run an MCP server on the host");
+  hub.snap.config.project.githubAuth = "gh";
+  await manager.refresh();
   await manager.add({ name: "custom", command: "fixture" });
   assert(manager.state.servers.some((s) => s.name === "custom"));
   await manager.setAgent(agent.id, ["custom"]);

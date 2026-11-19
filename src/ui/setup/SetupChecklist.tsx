@@ -18,7 +18,7 @@ const NEEDED: Record<SetupCheck["neededFor"], string> = {
   github: "for PRs & reviews",
 };
 
-function CheckRow({ c, running, onRun }: { c: SetupCheck; running: boolean; onRun: () => void }) {
+function CheckRow({ c, running, onRun, allowRun }: { c: SetupCheck; running: boolean; onRun: () => void; allowRun: boolean }) {
   const [copied, setCopied] = useState(false);
   const [icon, color] = ICON[c.status];
   return (
@@ -48,7 +48,7 @@ function CheckRow({ c, running, onRun }: { c: SetupCheck; running: boolean; onRu
                   >
                     {copied ? "Copied" : "Copy"}
                   </button>
-                  {c.fix.runnable && (
+                  {c.fix.runnable && allowRun && (
                     <button className="btn px-2 text-[12px]" disabled={running} onClick={onRun}>
                       {running ? "Running…" : "Run in terminal"}
                     </button>
@@ -71,6 +71,7 @@ function CheckRow({ c, running, onRun }: { c: SetupCheck; running: boolean; onRu
 /** "Get TranVuong HQ ready": what's missing on this machine and how to fix it. */
 export function SetupChecklist() {
   const setup = useOffice((s) => s.snap?.setup);
+  const appMode = useOffice((s) => s.snap?.config.project.githubAuth === "app");
   const [runningId, setRunningId] = useState<string | null>(null);
   if (!setup) return null;
 
@@ -97,6 +98,7 @@ export function SetupChecklist() {
               <CheckRow
                 key={c.id}
                 c={c}
+                allowRun={!appMode}
                 running={runningId === c.id}
                 onRun={() => {
                   setRunningId(c.id);
@@ -125,7 +127,7 @@ export function SetupChecklist() {
           )}
         </div>
         <div className="flex items-center justify-between gap-3 border-t-[3px] border-ink px-4 py-2">
-          <span className="text-[12px] text-muted">HQ never runs sudo or install scripts for you. "Run in terminal" shows exactly what runs.</span>
+          <span className="text-[12px] text-muted">{appMode ? "Machine setup is managed by the server administrator." : 'HQ never runs sudo or install scripts for you. "Run in terminal" shows exactly what runs.'}</span>
           <button className="btn" onClick={() => ui.closeSetup()}>
             Continue to the office
           </button>

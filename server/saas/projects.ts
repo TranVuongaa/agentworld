@@ -34,6 +34,22 @@ export class Projects {
     return result.rows[0];
   }
 
+  /** Call only after the repository and installation were verified with the owner's GitHub token. */
+  async rebindRepository(ownerId: string, projectId: string, input: { installationId: string; accountLogin: string; repositoryFullName: string }): Promise<boolean> {
+    const client = await this.db.connect();
+    try {
+      await client.query("BEGIN");
+      const owned = await client.query("SELECT 1 FROM saas_projects WHERE owner_id = $1 AND id = $2 FOR UPDATE", [ownerId, projectId]);
+      if (!owned.rowCount) { await client.query("ROLLBACK"); return false; }
+      await client.query(`INSERT INTO saas_github_installations (user_id, id, account_login) VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, id) DO UPDATE SET account_login = EXCLUDED.account_login`, [ownerId, input.installationId, input.accountLogin]);
+      await client.query("UPDATE saas_projects SET installation_id = $3, repository_full_name = $4, updated_at = now() WHERE owner_id = $1 AND id = $2", [ownerId, projectId, input.installationId, input.repositoryFullName]);
+      await client.query("COMMIT");
+      return true;
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
+  }
+
   async updateState(ownerId: string, projectId: string, config: unknown, plan: unknown): Promise<boolean> {
     const result = await this.db.query("UPDATE saas_projects SET config = $3::jsonb, plan = $4::jsonb, config_updated_at = now(), plan_updated_at = now(), updated_at = now() WHERE owner_id = $1 AND id = $2", [ownerId, projectId, JSON.stringify(config), JSON.stringify(plan)]);
     return result.rowCount === 1;

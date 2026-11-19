@@ -90,6 +90,7 @@ export interface ProjectConfig {
   path: string; // "~/developer/askwell"
   hqPort: number; // port sandboxes use to reach HQ via host.docker.internal
   managed?: boolean; // project is controlled by the local project supervisor
+  githubAuth?: "gh" | "app";
   exportPlan?: boolean; // also write the plan to docs/plan.md
   officeName?: string; // the sign on the office wall; empty = "TranVuong HQ"
 }
@@ -276,7 +277,7 @@ export interface SbxRule {
 export interface SbxAgentState {
   rules: SbxRule[]; // empty until the sandbox exists
   keys: string[]; // service keys scoped to this sandbox
-  envFile: { path: string; exists: boolean };
+  envFile: { path: string; exists: boolean; variables?: string[] };
   syncError: string | null;
   /** Requests the sandbox blocked, waiting in sbx's approval queue (`sbx policy approval ls`). */
   approvals: SbxApproval[];

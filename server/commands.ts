@@ -1,6 +1,6 @@
 // Browser commands → server actions. Names match OfficeDataSource methods.
 
-import { SERVICE_KEYS, type AgentCli, type AgentConfig, type AgentPatch, type ReviewTool, type WelcomeInput, type NewMcpServer, type Board, type NewAgentInput, type ProjectConfig, type RemoveAgentOptions, type SandboxSettings, type SetupCheckId, type WorkflowPatch } from "../src/data/types";
+import { HOST_TERMINAL, SERVICE_KEYS, type AgentCli, type AgentConfig, type AgentPatch, type ReviewTool, type WelcomeInput, type NewMcpServer, type Board, type NewAgentInput, type ProjectConfig, type RemoveAgentOptions, type SandboxSettings, type SetupCheckId, type WorkflowPatch } from "../src/data/types";
 import { LEAD_NAME, OFFICE_NAME_MAX } from "../src/data/names";
 import { STACK_CATEGORIES, stackSkills, stackTool, type StackChoice, type StackConfig } from "../src/data/stack";
 import { resolveAccess } from "./access";
@@ -15,6 +15,7 @@ import type { SbxMcp } from "./sbxMcp";
 import type { Sessions } from "./sessions";
 import { newAgent } from "./store";
 import { mergeByNotice } from "./githubSync";
+import { validEnvName } from "./saas/envNames";
 
 /** A stack from the browser, checked against the catalog. Null when nothing is chosen. */
 function cleanStack(raw: unknown): StackConfig | null {
@@ -61,20 +62,29 @@ export function makeCommands(hub: Hub, sessions: Sessions, planner: Planner, inb
     sendTerminalInput: (id, data) => sessions.input(str(id, 80), str(data, 100_000)),
     openShell: (id) => sessions.openShell(str(id, 80)),
     closeShell: (id) => sessions.closeShell(str(id, 80)),
-    openHostShell: (dir, fresh) => sessions.openHostShell(str(dir, 4096), fresh === true),
+    openHostShell: (dir, fresh) => {
+      if (hub.snap.config.project.githubAuth === "app") return hub.terminal(HOST_TERMINAL, "\x1b[31mOpen an agent sandbox terminal instead.\x1b[0m\r\n");
+      return sessions.openHostShell(str(dir, 4096), fresh === true);
+    },
     closeHostShell: () => sessions.closeHostShell(),
     forwardPort: (agentId, port) => sbx.forwardPort(str(agentId, 80), num(port)),
     unforwardPort: (agentId, port) => sbx.unforwardPort(str(agentId, 80), num(port)),
     resizeTerminal: (id, cols, rows) => sessions.resize(str(id, 80), num(cols), num(rows)),
     startAgent: (id) => sessions.start(str(id, 80)),
     stopAgent: (id) => sessions.stop(str(id, 80)),
-    openWorkspace: (id) => sessions.openWorkspace(str(id, 80)),
+    openWorkspace: (id) => {
+      if (hub.snap.config.project.githubAuth === "app") return hub.activity("config", str(id, 80), "Use the agent sandbox terminal to access its workspace.");
+      return sessions.openWorkspace(str(id, 80));
+    },
     recreateSandbox: (id) => sessions.recreate(str(id, 80)),
     recheckSetup: async () => {
       await sessions.recheckSetup();
       await sbx.refresh();
     },
-    runSetupFix: (id) => sessions.runFix(str(id, 40) as SetupCheckId),
+    runSetupFix: (id) => {
+      if (hub.snap.config.project.githubAuth === "app") return hub.activity("config", null, "Machine setup is managed by the server administrator.");
+      return sessions.runFix(str(id, 40) as SetupCheckId);
+    },
 
     // You → agent: same delivery path as the lead's assign_task / send_message.
     assignTask: (taskId, agentId) => planner.assign(str(taskId, 40), str(agentId, 80), "you"),
@@ -90,7 +100,7 @@ export function makeCommands(hub: Hub, sessions: Sessions, planner: Planner, inb
       const agent = newAgent(id, name, str(input.role, 40).trim() || "Developer", color, false);
       agent.cli = input.cli === "codex" ? "codex" : "claude";
       agent.model = str(input.model, 60).trim();
-      agent.mode = input.mode === "local" ? "local" : "sandbox";
+      agent.mode = input.mode === "local" && hub.snap.config.project.githubAuth !== "app" ? "local" : "sandbox";
       const lead = team().find((a) => a.isLead);
       if (lead) agent.sandbox = structuredClone(lead.sandbox);
       team().push(agent);
@@ -108,14 +118,14 @@ export function makeCommands(hub: Hub, sessions: Sessions, planner: Planner, inb
       const p = (patch ?? {}) as AgentPatch;
       const before = `${agent.cli}/${agent.mode}`;
       for (const k of ["name", "role", "model", "color", "roleMd"] as const) if (typeof p[k] === "string") agent[k] = str(p[k], 8000);
-      if (p.mode === "sandbox" || p.mode === "local") agent.mode = p.mode;
+      if (p.mode === "sandbox" || (p.mode === "local" && hub.snap.config.project.githubAuth !== "app")) agent.mode = p.mode;
       if ((p.cli === "claude" || p.cli === "codex") && p.cli !== agent.cli) {
         agent.cli = p.cli;
         // Model names don't carry over between CLIs.
         if (typeof p.model !== "string") agent.model = "";
       }
       if (Array.isArray(p.skills)) agent.skills = p.skills.map((s) => str(s, 60)).filter(Boolean);
-      if (p.workspacePath !== undefined) agent.workspacePath = p.workspacePath ? str(p.workspacePath, 500).trim() || null : null;
+      if (p.workspacePath !== undefined && (hub.snap.config.project.githubAuth !== "app" || !p.workspacePath)) agent.workspacePath = p.workspacePath ? str(p.workspacePath, 500).trim() || null : null;
       hub.configChanged();
       // Codex agents add their own setup checks.
       if (`${agent.cli}/${agent.mode}` !== before) void sessions.recheckSetup();
@@ -130,23 +140,24 @@ export function makeCommands(hub: Hub, sessions: Sessions, planner: Planner, inb
       const agent = hub.cfg(str(id));
       if (!agent || agent.isLead) return;
       const o = (opts ?? {}) as Partial<RemoveAgentOptions>;
-      const removed = await sessions.removeResources(agent.id, { deleteSandbox: o.deleteSandbox !== false, deleteFolder: o.deleteFolder === true });
-      hub.snap.config.team = team().filter((a) => a.id !== agent.id);
-      hub.snap.agents = hub.snap.agents.filter((a) => a.agentId !== agent.id);
-      inbox.forget(agent.id);
-      mcp.forget(agent.id);
-      for (const t of hub.snap.tasks)
-        if (t.ownerId === agent.id && t.status !== "done") {
-          t.ownerId = null;
-          if (t.status === "in-progress") t.status = "todo";
-          hub.emit({ type: "task.updated", task: { ...t } });
-        }
-      hub.planChanged();
-      hub.emit({ type: "agent.removed", agentId: agent.id });
-      hub.configChanged();
-      const what = removed.length ? ` Deleted: ${removed.join(" and ")}.` : "";
-      const kept = removed.includes("folder") ? "" : " Their folder is kept.";
-      hub.activity("config", null, `Removed ${agent.name}.${what}${kept}`);
+      await sessions.removeResources(agent.id, { deleteSandbox: o.deleteSandbox !== false, deleteFolder: o.deleteFolder === true }, (removed) => {
+        hub.snap.config.team = team().filter((a) => a.id !== agent.id);
+        hub.snap.agents = hub.snap.agents.filter((a) => a.agentId !== agent.id);
+        inbox.forget(agent.id);
+        mcp.forget(agent.id);
+        for (const t of hub.snap.tasks)
+          if (t.ownerId === agent.id && t.status !== "done") {
+            t.ownerId = null;
+            if (t.status === "in-progress") t.status = "todo";
+            hub.emit({ type: "task.updated", task: { ...t } });
+          }
+        hub.planChanged();
+        hub.emit({ type: "agent.removed", agentId: agent.id });
+        hub.configChanged();
+        const what = removed.length ? ` Deleted: ${removed.join(" and ")}.` : "";
+        const kept = removed.includes("folder") ? "" : " Their folder is kept.";
+        hub.activity("config", null, `Removed ${agent.name}.${what}${kept}`);
+      });
     },
 
     updateSandbox: (id, patch) => {
@@ -174,21 +185,34 @@ export function makeCommands(hub: Hub, sessions: Sessions, planner: Planner, inb
       const agentId = id === null ? null : str(id, 80);
       const svc = str(service, 40);
       if (!(SERVICE_KEYS as readonly string[]).includes(svc) || typeof value !== "string" || !value.trim()) return;
+      if (hub.snap.config.project.githubAuth === "app" && svc === "github") return hub.activity("config", agentId, "GitHub access is managed by the project's GitHub App connection.");
       if (agentId && !hub.cfg(agentId)) return;
       return attempt(agentId, `Stored the ${svc} key ${agentId ? `for ${hub.name(agentId)}'s sandbox` : hub.snap.config.project.managed ? "for this project" : "for every sandbox"}`, () => sbx.setKey(agentId, svc, value));
     },
     removeSecret: (id, service) => {
       const agentId = id === null ? null : str(id, 80);
       const svc = str(service, 40);
-      if (!(SERVICE_KEYS as readonly string[]).includes(svc)) return;
+      if (!(SERVICE_KEYS as readonly string[]).includes(svc) || (agentId && !hub.cfg(agentId))) return;
       return attempt(agentId, `Removed the ${svc} key ${agentId ? `from ${hub.name(agentId)}'s sandbox` : hub.snap.config.project.managed ? "from this project" : "from every sandbox"}`, () => sbx.removeKey(agentId, svc));
     },
     setProxy: (url) => {
+      if (hub.snap.config.project.githubAuth === "app") return hub.activity("config", null, "The machine-wide sandbox proxy is managed by the server administrator.");
       const u = typeof url === "string" && url.trim() ? str(url, 300).trim() : null;
       if (u && !/^https?:\/\/[^\s]+$/i.test(u)) return hub.activity("config", null, "Proxy must be an http(s):// URL");
       return attempt(null, u ? `Set the sandbox proxy to ${u}` : "Removed the sandbox proxy", () => sbx.setProxy(u));
     },
+    setAgentEnv: (id, name, value) => {
+      const agentId = str(id, 80);
+      if (!hub.snap.config.project.managed || !hub.cfg(agentId) || !validEnvName(name) || typeof value !== "string" || value.length > 8192 || /[\r\n\0]/.test(value)) return;
+      return attempt(agentId, `Updated ${name} for ${hub.name(agentId)}; restart the agent to apply it`, () => sbx.changeManagedEnv(agentId, name, value));
+    },
+    removeAgentEnv: (id, name) => {
+      const agentId = str(id, 80);
+      if (!hub.snap.config.project.managed || !hub.cfg(agentId) || !validEnvName(name)) return;
+      return attempt(agentId, `Removed ${name} for ${hub.name(agentId)}; restart the agent to apply it`, () => sbx.changeManagedEnv(agentId, name, null));
+    },
     openEnvFile: async (id) => {
+      if (hub.snap.config.project.githubAuth === "app") return hub.activity("config", str(id, 80), "Manage agent variables in Settings → Sandbox.");
       const agent = hub.cfg(str(id, 80));
       if (!agent) return;
       const file = sbx.ensureEnvFile(agent.id);
